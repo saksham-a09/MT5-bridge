@@ -1,0 +1,49 @@
+services:
+  # Central Hub API Controller (FastAPI)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mt5-hub-backend
+    restart: unless-stopped
+    environment:
+      - HUB_HOST=0.0.0.0
+      - HUB_PORT=8000
+      - HUB_DB_PATH=/app/data/hub.db
+      - HUB_SECRET_KEY=mt5-cluster-secret-key-2026
+      - HEARTBEAT_TIMEOUT_SECONDS=30
+    volumes:
+      - hub-db-data:/app/data
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/nodes')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - mt5-cluster-net
+
+  # Web Dashboard (React + Nginx)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: mt5-hub-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - mt5-cluster-net
+
+volumes:
+  hub-db-data:
+    driver: local
+
+networks:
+  mt5-cluster-net:
+    driver: bridge

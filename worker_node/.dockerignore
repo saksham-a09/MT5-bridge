@@ -1,0 +1,12 @@
+CLIENTS
+CLIENTS/
+**/CLIENTS/**
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+.env
+.git
+.DS_Store
+Thumbs.db
