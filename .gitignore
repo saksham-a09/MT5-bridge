@@ -1,0 +1,148 @@
+# ==========================================
+# MT5 Bridge & Multi-Terminal Copier .gitignore
+# ==========================================
+
+# --- Environments & Secrets ---
+.env
+.env.*
+!.env.example
+*.env
+
+# --- Worker Node & MT5 Terminal Clones ---
+# Cloned MT5 portable terminals (contains executables, charts, caches, and terminal profiles)
+worker_node/CLIENTS/
+**/CLIENTS/
+**/clone_*/
+
+# MT5 generated files, telemetry, and IPC command files
+telemetry.json
+telemetry.json.tmp
+urgent_telemetry.json
+urgent_telemetry.json.tmp
+**/commands/*.json
+**/commands/*.tmp
+**/results/*.json
+**/results/*.tmp
+config.ini
+!example.ini
+
+# --- Databases & Persistent Storage ---
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+backend/data/*.db
+backend/data/*.sqlite*
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+env.bak/
+venv.bak/
+
+# Testing & Linting
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Node / Frontend ---
+frontend/node_modules/
+**/node_modules/
+frontend/dist/
+frontend/build/
+.npm
+.yarn/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-debug.log*
+vite.config.js.timestamp-*
+.vite/
+
+# --- Logs ---
+*.log
+logs/
+*.log.*
+worker_node/*.log
+worker_node/CLIENTS/**/*.log
+
+# --- Temporary & Backup Files ---
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# --- Operating System & IDEs ---
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+
+# Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# JetBrains (PyCharm, WebStorm, etc.)
+.idea/
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
