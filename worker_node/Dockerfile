@@ -7,21 +7,23 @@ ENV DISPLAY=:99
 
 WORKDIR /app
 
-# 1. Enable 32-bit architecture & install Wine, Xvfb, and system tools
+# 1. Enable 32-bit architecture & install WineHQ Stable (Wine 9.0), Xvfb, and system tools
 RUN dpkg --add-architecture i386 && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-        wine \
-        wine64 \
-        wine32 \
-        xvfb \
+        ca-certificates \
         wget \
         curl \
+        gnupg \
+        software-properties-common \
         cabextract \
         procps \
-        ca-certificates && \
-    ( [ -f /usr/bin/wineboot ] || ln -sf /usr/lib/wine/wineboot /usr/bin/wineboot ) && \
-    ( [ -f /usr/bin/wineserver ] || ln -sf /usr/lib/wine/wineserver /usr/bin/wineserver ) && \
+        xvfb && \
+    mkdir -pm755 /etc/apt/keyrings && \
+    wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key && \
+    wget -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/ubuntu/dists/jammy/winehq-jammy.sources && \
+    apt-get update && \
+    apt-get install -y --install-recommends winehq-stable && \
     rm -rf /var/lib/apt/lists/*
 
 # 2. Initialize Wine prefix and install Windows 64-bit Python 3.11
@@ -30,6 +32,7 @@ RUN Xvfb :99 -screen 0 1024x768x16 -nolisten tcp & \
     sleep 2 && \
     wineboot --init && wineserver -w && \
     wine reg add 'HKCU\Software\Wine' /v Version /t REG_SZ /d win10 /f && wineserver -w && \
+    wine reg add 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\AeDebug' /v Auto /t REG_SZ /d 0 /f && wineserver -w && \
     wget -q https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe -O /tmp/python-installer.exe && \
     wine /tmp/python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_launcher=0 Shortcuts=0 Include_doc=0 Include_test=0 SimpleInstall=1 Include_pip=1 && \
     wineserver -w && \
@@ -45,6 +48,7 @@ RUN Xvfb :99 -screen 0 1024x768x16 -nolisten tcp & \
     XVFB_PID=$! && \
     sleep 2 && \
     wine "C:\\Program Files\\Python311\\python.exe" -m pip install --no-cache-dir --upgrade pip && \
+    wine "C:\\Program Files\\Python311\\python.exe" -m pip install --no-cache-dir "numpy>=1.26.0,<2.0.0" && \
     wine "C:\\Program Files\\Python311\\python.exe" -m pip install --no-cache-dir -r requirements.txt && \
     wineserver -w && \
     (kill $XVFB_PID 2>/dev/null || true)
