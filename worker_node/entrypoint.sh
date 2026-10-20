@@ -14,7 +14,10 @@ echo "[+] Virtual X11 display started on :99 (PID: $XVFB_PID)"
 
 # 2. Configure Wine environment
 export WINEDEBUG=-all,err+all
+export WINEARCH=win64
 export WINEPREFIX=${WINEPREFIX:-/root/.wine}
+export WINEDLLOVERRIDES="mscoree,mshtml="
+export PATH="/opt/wine-stable/bin:${PATH}"
 
 # Wait briefly for Xvfb initialization
 sleep 2

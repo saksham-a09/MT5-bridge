@@ -2,7 +2,10 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV WINEDEBUG=-all
+ENV WINEARCH=win64
 ENV WINEPREFIX=/root/.wine
+ENV WINEDLLOVERRIDES="mscoree,mshtml="
+ENV PATH="/opt/wine-stable/bin:${PATH}"
 ENV DISPLAY=:99
 
 WORKDIR /app
@@ -30,7 +33,7 @@ RUN dpkg --add-architecture i386 && \
 RUN Xvfb :99 -screen 0 1024x768x16 -nolisten tcp & \
     XVFB_PID=$! && \
     sleep 2 && \
-    wineboot --init && wineserver -w && \
+    wineboot -u && wineserver -w && \
     wine reg add 'HKCU\Software\Wine' /v Version /t REG_SZ /d win10 /f && wineserver -w && \
     wine reg add 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\AeDebug' /v Auto /t REG_SZ /d 0 /f && wineserver -w && \
     wget -q https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe -O /tmp/python-installer.exe && \
