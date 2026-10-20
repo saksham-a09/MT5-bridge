@@ -114,7 +114,7 @@ class WorkerManager:
         os.makedirs(self.clients_dir, exist_ok=True)
 
     def log(self, msg, level="INFO"):
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [{level}] [Node {self.node_id}] {msg}")
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [{level}] [Node {self.node_id}] {msg}", flush=True)
 
     def kill_processes_for_login(self, login_id):
         """Kills any python worker or MT5 terminal process for a given login ID."""

@@ -29,8 +29,9 @@ trap cleanup SIGTERM SIGINT
 
 # 3. Launch Worker Manager under Wine Windows Python
 echo "[+] Starting Worker Manager..."
+export PYTHONUNBUFFERED=1
 PY_BIN="python"
 if [ -f "/root/.wine/drive_c/Program Files/Python311/python.exe" ]; then
     PY_BIN="C:\\Program Files\\Python311\\python.exe"
 fi
-wine "$PY_BIN" worker_manager.py "$@"
+wine "$PY_BIN" -u worker_manager.py "$@"
