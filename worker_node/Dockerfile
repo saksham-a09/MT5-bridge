@@ -35,6 +35,7 @@ RUN Xvfb :99 -screen 0 1024x768x16 -nolisten tcp & \
     wineserver -w && \
     rm -f /tmp/python-installer.exe && \
     wine reg add 'HKLM\System\CurrentControlSet\Control\Session Manager\Environment' /v Path /t REG_EXPAND_SZ /d 'C:\Program Files\Python311;C:\Program Files\Python311\Scripts;C:\windows\system32;C:\windows' /f && \
+    ( [ -f "/root/.wine/drive_c/Program Files/Python311/python.exe" ] && ln -sf "/root/.wine/drive_c/Program Files/Python311/python.exe" /root/.wine/drive_c/windows/system32/python.exe || true ) && \
     wineserver -w && \
     (kill $XVFB_PID 2>/dev/null || true)
 

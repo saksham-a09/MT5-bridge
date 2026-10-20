@@ -191,8 +191,20 @@ class WorkerManager:
     def register(self, max_retries=10, retry_delay=2):
         """Registers this hardware node with the Central Hub with retry attempts."""
         self.log(f"Connecting to Central Hub at {self.hub_url}...")
-        vm = psutil.virtual_memory()
-        os_desc = f"{platform.system()} {platform.release()} ({psutil.cpu_count(logical=True)} vCPUs, {round(vm.total / (1024**3), 1)}GB RAM)"
+        ram_gb = 8.0
+        try:
+            vm = psutil.virtual_memory()
+            ram_gb = round(vm.total / (1024**3), 1)
+        except Exception:
+            pass
+
+        cpus = 4
+        try:
+            cpus = psutil.cpu_count(logical=True) or 4
+        except Exception:
+            pass
+
+        os_desc = f"{platform.system()} {platform.release()} ({cpus} vCPUs, {ram_gb}GB RAM)"
         if is_wine():
             os_desc += " [Wine]"
 
