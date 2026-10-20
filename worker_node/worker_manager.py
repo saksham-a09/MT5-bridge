@@ -97,7 +97,10 @@ class WorkerManager:
         self.node_name = node_name
         self.api_key = api_key
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
-        self.master_mt5 = os.path.abspath(os.path.normpath(master_mt5))
+        expanded_master = os.path.expanduser(master_mt5)
+        if "~" in expanded_master and os.path.isdir("/app/master_mt5"):
+            expanded_master = "/app/master_mt5"
+        self.master_mt5 = os.path.abspath(os.path.normpath(expanded_master))
         self.clients_dir = os.path.abspath(os.path.normpath(clients_dir))
         self.template_path = os.path.abspath(os.path.join(self.script_dir, "example.ini"))
         self.max_terminals = max_terminals
@@ -119,13 +122,24 @@ class WorkerManager:
         login_id_str = str(login_id)
         my_pid = os.getpid()
 
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            procs = list(psutil.process_iter())
+        except Exception:
+            procs = []
+
+        for proc in procs:
             try:
-                pid = proc.info['pid']
+                pid = proc.pid
                 if pid == my_pid:
                     continue
-                name = (proc.info.get('name') or '').lower()
-                cmdline = proc.info.get('cmdline') or []
+                try:
+                    name = (proc.name() or '').lower()
+                except Exception:
+                    name = ''
+                try:
+                    cmdline = proc.cmdline() or []
+                except Exception:
+                    cmdline = []
                 cmdline_str = " ".join(cmdline).lower()
 
                 is_worker = "worker.py" in cmdline_str and f"--login {login_id_str}" in cmdline_str
@@ -145,12 +159,24 @@ class WorkerManager:
         my_pid = os.getpid()
         count = 0
 
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            procs = list(psutil.process_iter())
+        except Exception:
+            procs = []
+
+        for proc in procs:
             try:
-                if proc.info['pid'] == my_pid:
+                pid = proc.pid
+                if pid == my_pid:
                     continue
-                name = (proc.info.get('name') or '').lower()
-                cmdline = proc.info.get('cmdline') or []
+                try:
+                    name = (proc.name() or '').lower()
+                except Exception:
+                    name = ''
+                try:
+                    cmdline = proc.cmdline() or []
+                except Exception:
+                    cmdline = []
                 cmdline_str = " ".join(cmdline).lower()
 
                 if clients_name in cmdline_str or "worker.py" in cmdline_str:
@@ -217,6 +243,31 @@ class WorkerManager:
         terminal_exe = os.path.abspath(os.path.join(self.master_mt5, "terminal64.exe"))
         if not os.path.isfile(terminal_exe):
             terminal_exe = os.path.abspath(os.path.join(self.master_mt5, "terminal.exe"))
+
+        if not os.path.isfile(terminal_exe):
+            # Check candidate directories
+            candidates = [
+                self.master_mt5,
+                os.path.join(self.script_dir, "master_mt5"),
+                os.path.join(self.script_dir, "Master MT5"),
+                os.path.join(os.path.dirname(self.script_dir), "Master MT5"),
+                "/app/master_mt5",
+                "/app/Master MT5",
+                "Z:\\app\\master_mt5",
+                "Z:\\app\\Master MT5",
+                r"C:\master_mt5",
+                r"C:\Program Files\MetaTrader 5"
+            ]
+            for cand in candidates:
+                for exe_name in ["terminal64.exe", "terminal.exe"]:
+                    cand_exe = os.path.abspath(os.path.join(cand, exe_name))
+                    if os.path.isfile(cand_exe):
+                        terminal_exe = cand_exe
+                        self.master_mt5 = os.path.dirname(cand_exe)
+                        self.log(f"Auto-discovered master MT5 at: {self.master_mt5}")
+                        break
+                if os.path.isfile(terminal_exe):
+                    break
 
         os.makedirs(clone_dir, exist_ok=True)
         log_path = os.path.join(clone_dir, f"worker_{login_str}_stdout.log")

@@ -8,7 +8,7 @@ services:
     environment:
       - HUB_URL=${HUB_URL:-http://YOUR_SERVER_IP:8000}
       - NODE_ID=${NODE_ID:-vps-linux-worker-01}
-      - NODE_NAME=$${NODE_NAME:-Linux Cloud Worker #1}
+      - NODE_NAME=${NODE_NAME:-Linux Cloud Worker #1}
       - NODE_API_KEY=${NODE_API_KEY:-mt5-cluster-secret-key-2026}
       - MASTER_MT5_DIR=${MASTER_MT5_DIR:-/app/master_mt5}
       - CLIENTS_DIR=/app/CLIENTS
@@ -16,6 +16,7 @@ services:
       - POLL_INTERVAL=8
     volumes:
       - ./CLIENTS:/app/CLIENTS
-      # Optional: Mount your master MT5 template folder from host
-      # - /path/to/host/mt5_master:/app/master_mt5:ro
+      - ../Master MT5:/app/master_mt5:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ipc: host
