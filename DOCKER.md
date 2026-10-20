@@ -15,7 +15,7 @@ docker compose up -d --build
 That's it! 
 
 ### Service Endpoints:
-- **Web Dashboard**: [http://localhost:3000](http://localhost:3000) (or `http://YOUR_SERVER_IP:3000`)
+- **Web Dashboard**: [http://localhost](http://localhost) (or `http://YOUR_SERVER_IP` on standard port 80 / port 3000)
 - **Central API Hub**: [http://localhost:8000](http://localhost:8000)
 - **Interactive Swagger Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
 
