@@ -40,6 +40,22 @@ def is_wine():
             return True
     return False
 
+def trim_working_set(pid=None):
+    """Trims unused working set memory pages on Windows to minimize physical RAM footprint."""
+    if os.name != "nt" or is_wine():
+        return
+    try:
+        import ctypes
+        PROCESS_QUERY_INFORMATION = 0x0400
+        PROCESS_SET_QUOTA = 0x0100
+        target_pid = pid or os.getpid()
+        h_proc = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, False, target_pid)
+        if h_proc:
+            ctypes.windll.psapi.EmptyWorkingSet(h_proc)
+            ctypes.windll.kernel32.CloseHandle(h_proc)
+    except Exception:
+        pass
+
 def api_request(method, url, data=None, headers=None, timeout=10):
     # Avoid Windows IPv6 DNS resolution lag/timeout on localhost
     if "://localhost:" in url:
@@ -207,6 +223,7 @@ class WorkerManager:
 
         cmd = [
             sys.executable,
+            "-O",
             worker_script,
             "--login", login_str,
             "--password", str(creds["password"]),
@@ -429,6 +446,7 @@ class WorkerManager:
         last_poll = 0
         last_telemetry = 0
         last_cmd_poll = 0
+        last_mem_trim = 0
 
         while self.is_running:
             now = time.time()
@@ -471,7 +489,21 @@ class WorkerManager:
                     pass
                 last_telemetry = now
 
-            time.sleep(0.01)
+            # 7. Periodic working set memory trim across manager and workers (every 60s)
+            if now - last_mem_trim >= 60.0:
+                trim_working_set(os.getpid())
+                for login, info in list(self.running_workers.items()):
+                    proc = info.get("process")
+                    if proc and proc.pid:
+                        trim_working_set(proc.pid)
+                try:
+                    import gc
+                    gc.collect()
+                except Exception:
+                    pass
+                last_mem_trim = now
+
+            time.sleep(0.02)
 
         self.shutdown()
 

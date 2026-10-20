@@ -151,11 +151,49 @@ def update_ini_template(template_content, login, password, server, expert=None, 
     return "\n".join(new_lines)
 
 
+def trim_working_set(pid=None):
+    """Trims unused working set memory pages on Windows to minimize physical RAM footprint."""
+    if os.name != "nt" or is_wine():
+        return
+    try:
+        import ctypes
+        PROCESS_QUERY_INFORMATION = 0x0400
+        PROCESS_SET_QUOTA = 0x0100
+        target_pid = pid or os.getpid()
+        h_proc = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, False, target_pid)
+        if h_proc:
+            ctypes.windll.psapi.EmptyWorkingSet(h_proc)
+            ctypes.windll.kernel32.CloseHandle(h_proc)
+    except Exception:
+        pass
+
+
 def patch_mt5_experts_config(clone_dir, logger=None):
-    """Ensures MT5 terminal Config/common.ini and terminal.ini are pre-configured with AutoTrading / Experts enabled."""
+    """Ensures MT5 terminal Config/common.ini and terminal.ini are configured with AutoTrading / Experts enabled
+    and optimized for minimal RAM, CPU, and disk usage (disables news, sound, DDE, and caps chart bars)."""
     cfg_dir = os.path.join(clone_dir, "Config")
     os.makedirs(cfg_dir, exist_ok=True)
     
+    desired_settings = {
+        "experts": {
+            "Enabled": "1",
+            "AllowLiveTrading": "1",
+            "AllowDllImport": "1",
+            "ConfirmDllCalls": "0"
+        },
+        "common": {
+            "NewsEnable": "0",
+            "EnableNews": "0",
+            "SoundEnable": "0",
+            "DDEEnable": "0"
+        },
+        "charts": {
+            "MaxBars": "2000",
+            "PrintColor": "0",
+            "SaveDeleted": "0"
+        }
+    }
+
     for filename in ["common.ini", "terminal.ini"]:
         filepath = os.path.join(cfg_dir, filename)
         encoding = "utf-16le"
@@ -174,54 +212,62 @@ def patch_mt5_experts_config(clone_dir, logger=None):
 
         lines = content.splitlines() if content else []
         new_lines = []
-        in_experts = False
-        has_experts = False
-        keys_set = set()
+        cur_sec = None
+        seen_keys = {s: set() for s in desired_settings}
+        present_sections = set()
 
         for line in lines:
             stripped = line.strip()
             if stripped.startswith("[") and stripped.endswith("]"):
-                if in_experts:
-                    if "enabled" not in keys_set:
-                        new_lines.append("Enabled=1")
-                    if "allowlivetrading" not in keys_set:
-                        new_lines.append("AllowLiveTrading=1")
-                    if "allowdllimport" not in keys_set:
-                        new_lines.append("AllowDllImport=1")
-                    in_experts = False
-                if stripped.lower() == "[experts]":
-                    in_experts = True
-                    has_experts = True
-            elif in_experts and "=" in stripped:
-                k = stripped.split("=")[0].strip().lower()
-                if k in ("enabled", "allowlivetrading", "allowdllimport"):
-                    line = f"{stripped.split('=')[0].strip()}=1"
-                    keys_set.add(k)
+                if cur_sec in desired_settings:
+                    for k, v in desired_settings[cur_sec].items():
+                        if k.lower() not in seen_keys[cur_sec]:
+                            new_lines.append(f"{k}={v}")
+                            seen_keys[cur_sec].add(k.lower())
+                sec_name = stripped[1:-1].strip().lower()
+                cur_sec = sec_name
+                if sec_name in desired_settings:
+                    present_sections.add(sec_name)
+                new_lines.append(line)
+                continue
+
+            if cur_sec in desired_settings and "=" in stripped and not stripped.startswith(";"):
+                k, _ = stripped.split("=", 1)
+                k_clean = k.strip()
+                k_lower = k_clean.lower()
+                target_key = None
+                for dk in desired_settings[cur_sec]:
+                    if dk.lower() == k_lower:
+                        target_key = dk
+                        break
+
+                if target_key:
+                    target_val = desired_settings[cur_sec][target_key]
+                    new_lines.append(f"{target_key}={target_val}")
+                    seen_keys[cur_sec].add(k_lower)
+                    continue
+
             new_lines.append(line)
 
-        if in_experts:
-            if "enabled" not in keys_set:
-                new_lines.append("Enabled=1")
-            if "allowlivetrading" not in keys_set:
-                new_lines.append("AllowLiveTrading=1")
-            if "allowdllimport" not in keys_set:
-                new_lines.append("AllowDllImport=1")
-        elif not has_experts:
-            new_lines.append("")
-            new_lines.append("[Experts]")
-            new_lines.append("Enabled=1")
-            new_lines.append("Account=0")
-            new_lines.append("Profile=0")
-            new_lines.append("AllowLiveTrading=1")
-            new_lines.append("AllowDllImport=1")
-            new_lines.append("ConfirmDllCalls=0")
+        if cur_sec in desired_settings:
+            for k, v in desired_settings[cur_sec].items():
+                if k.lower() not in seen_keys[cur_sec]:
+                    new_lines.append(f"{k}={v}")
+                    seen_keys[cur_sec].add(k.lower())
+
+        for sec_name, sec_dict in desired_settings.items():
+            if sec_name not in present_sections:
+                new_lines.append("")
+                new_lines.append(f"[{sec_name.capitalize()}]")
+                for k, v in sec_dict.items():
+                    new_lines.append(f"{k}={v}")
 
         try:
             out_text = "\n".join(new_lines) + "\n"
             with open(filepath, "w", encoding=encoding) as f:
                 f.write(out_text)
             if logger:
-                logger.info(f"Configured {filename} with Experts Enabled=1 ({encoding})")
+                logger.info(f"Configured {filename} (Experts Enabled, low-RAM tuned) ({encoding})")
         except Exception as e:
             if logger:
                 logger.warning(f"Could not write {filename}: {e}")
@@ -255,6 +301,7 @@ class MT5Worker:
         self.executed_commands = set()  # Cache of executed cmd_ids to prevent re-execution
         self.last_pos_sig = None
         self.last_telemetry_data = {}
+        self.last_mem_trim = 0
         self.urgent_telemetry_file = os.path.join(self.clone_dir, "urgent_telemetry.json")
 
         log_file = os.path.join(self.clone_dir, f"worker_{self.login_id}.log")
@@ -372,8 +419,16 @@ class MT5Worker:
                 self.logger.error(f"Master MT5 directory '{master_dir}' does not exist.")
                 return False
             try:
-                shutil.copytree(master_dir, self.clone_dir, dirs_exist_ok=True)
-                self.logger.info(f"Successfully cloned master MT5 structure to {self.clone_dir}")
+                def _ignore_bloat(path, names):
+                    # Exclude heavy non-essential folders to save disk space and RAM
+                    ignored = []
+                    for name in names:
+                        if name.lower() in ("bases", "sounds", "help", "tester", "templates"):
+                            ignored.append(name)
+                    return ignored
+
+                shutil.copytree(master_dir, self.clone_dir, ignore=_ignore_bloat, dirs_exist_ok=True)
+                self.logger.info(f"Successfully cloned master MT5 structure to {self.clone_dir} (resource optimized)")
             except Exception as e:
                 self.logger.error(f"Failed to clone master MT5 directory: {e}")
                 return False
@@ -424,15 +479,16 @@ class MT5Worker:
                 except Exception as e:
                     self.logger.warning(f"Could not clear charts in {profile_dir}: {e}")
 
-        # 4. Clear stale temp lock files
-        temp_dir = os.path.join(self.clone_dir, "temp")
-        if os.path.isdir(temp_dir):
-            try:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            except Exception:
-                pass
+        # 4. Clear stale temp lock files and unnecessary cache folders
+        for bloat_dir in ["temp", "CrashDumps", "Tester", "Sounds", "Help"]:
+            p = os.path.join(self.clone_dir, bloat_dir)
+            if os.path.isdir(p):
+                try:
+                    shutil.rmtree(p, ignore_errors=True)
+                except Exception:
+                    pass
 
-        # Ensure AutoTrading is configured in terminal ini files
+        # Ensure AutoTrading is configured in terminal ini files with low-RAM parameters
         patch_mt5_experts_config(self.clone_dir, self.logger)
 
         # 5. Launch terminal in portable mode
@@ -700,6 +756,20 @@ class MT5Worker:
                     json.dump(data, f, indent=2)
             except Exception as e:
                 self.logger.error(f"Failed to write telemetry file: {e}")
+
+        # Periodic working set memory trim (every 60s)
+        now_ts = time.time()
+        if now_ts - self.last_mem_trim >= 60.0:
+            self.last_mem_trim = now_ts
+            trim_working_set(os.getpid())
+            proc = self.get_terminal_process()
+            if proc and proc.pid:
+                trim_working_set(proc.pid)
+            try:
+                import gc
+                gc.collect()
+            except Exception:
+                pass
 
     def check_fast_position_changes(self):
         """High-frequency (15ms) scanner to detect trade open/close/modify and pending orders instantly."""
@@ -1340,7 +1410,8 @@ class MT5Worker:
     def process_command_queue(self):
         """Scans for incoming trade commands from Worker Manager and executes instantly."""
         if not os.path.isdir(self.cmd_dir):
-            return
+            return False
+        executed_any = False
         try:
             for fname in os.listdir(self.cmd_dir):
                 if not fname.endswith(".json"):
@@ -1363,6 +1434,7 @@ class MT5Worker:
                     # Execute immediately (< 10ms)!
                     result = self.execute_trade_command(cmd_id, cmd_data)
                     self.executed_commands.add(cmd_id)
+                    executed_any = True
                     if len(self.executed_commands) > 1000:
                         self.executed_commands = set(list(self.executed_commands)[-500:])
 
@@ -1382,6 +1454,7 @@ class MT5Worker:
                     self.logger.error(f"Error processing command {fname}: {e}")
         except Exception:
             pass
+        return executed_any
 
     def monitor_loop(self):
         """High-speed supervision, command execution and telemetry collection loop."""
@@ -1394,11 +1467,12 @@ class MT5Worker:
         last_telemetry_time = 0
 
         while not self.stop_event.is_set():
+            did_work = False
             try:
-                # 1. Process any pending trade commands INSTANTLY (< 10ms)
-                self.process_command_queue()
+                # 1. Process any pending trade commands INSTANTLY
+                did_work = self.process_command_queue()
 
-                # 2. Ultra-fast position scanner to catch master trade events instantly (15ms)
+                # 2. Ultra-fast position scanner to catch master trade events instantly
                 self.check_fast_position_changes()
 
                 now = time.time()
@@ -1436,8 +1510,10 @@ class MT5Worker:
             except Exception as e:
                 self.logger.error(f"Monitor loop error: {e}")
 
-            # Sleep only 10ms for ultra-low latency trade copying responsiveness
-            self.stop_event.wait(0.01)
+            # If commands were just executed, loop immediately with zero sleep to handle bursts.
+            # Otherwise, sleep 25ms to keep CPU load minimal while maintaining ultra-fast responsiveness.
+            if not did_work:
+                self.stop_event.wait(0.025)
 
         # Cleanup on stop
         self.logger.info("Stopping worker...")
