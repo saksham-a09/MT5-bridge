@@ -31,25 +31,27 @@ RUN Xvfb :99 -screen 0 1024x768x16 -nolisten tcp & \
     wineboot --init && wineserver -w && \
     wine reg add 'HKCU\Software\Wine' /v Version /t REG_SZ /d win10 /f && wineserver -w && \
     wget -q https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe -O /tmp/python-installer.exe && \
-    wine /tmp/python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_pip=1 && \
+    wine /tmp/python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_launcher=0 Shortcuts=0 Include_doc=0 Include_test=0 SimpleInstall=1 Include_pip=1 && \
     wineserver -w && \
     rm -f /tmp/python-installer.exe && \
-    kill $XVFB_PID
+    wine reg add 'HKLM\System\CurrentControlSet\Control\Session Manager\Environment' /v Path /t REG_EXPAND_SZ /d 'C:\Program Files\Python311;C:\Program Files\Python311\Scripts;C:\windows\system32;C:\windows' /f && \
+    wineserver -w && \
+    (kill $XVFB_PID 2>/dev/null || true)
 
 # 3. Copy worker requirements and install into Wine Python
 COPY requirements.txt .
 RUN Xvfb :99 -screen 0 1024x768x16 -nolisten tcp & \
     XVFB_PID=$! && \
     sleep 2 && \
-    wine python -m pip install --no-cache-dir --upgrade pip && \
-    wine python -m pip install --no-cache-dir -r requirements.txt && \
+    wine "C:\\Program Files\\Python311\\python.exe" -m pip install --no-cache-dir --upgrade pip && \
+    wine "C:\\Program Files\\Python311\\python.exe" -m pip install --no-cache-dir -r requirements.txt && \
     wineserver -w && \
-    kill $XVFB_PID
+    (kill $XVFB_PID 2>/dev/null || true)
 
 # 4. Copy worker application code
 COPY . .
 
-# Ensure scripts and directories are ready
-RUN chmod +x entrypoint.sh && mkdir -p /app/CLIENTS
+# Ensure scripts and directories are ready (strip Windows CRLF from entrypoint.sh)
+RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh && mkdir -p /app/CLIENTS
 
 ENTRYPOINT ["/app/entrypoint.sh"]
