@@ -11,6 +11,7 @@ WORKDIR /app
 RUN dpkg --add-architecture i386 && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
+        wine \
         wine64 \
         wine32 \
         xvfb \
@@ -19,21 +20,23 @@ RUN dpkg --add-architecture i386 && \
         cabextract \
         procps \
         ca-certificates && \
+    ( [ -f /usr/bin/wineboot ] || ln -sf /usr/lib/wine/wineboot /usr/bin/wineboot ) && \
+    ( [ -f /usr/bin/wineserver ] || ln -sf /usr/lib/wine/wineserver /usr/bin/wineserver ) && \
     rm -rf /var/lib/apt/lists/*
 
 # 2. Initialize Wine prefix in headless mode
-RUN wineboot --init && wineserver -w
+RUN xvfb-run -a wineboot --init && wineserver -w
 
 # 3. Download and install Windows 64-bit Python 3.11 inside Wine
 RUN wget -q https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe -O /tmp/python-installer.exe && \
-    wine /tmp/python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 && \
+    xvfb-run -a wine /tmp/python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 && \
     wineserver -w && \
     rm /tmp/python-installer.exe
 
 # 4. Copy worker requirements and install into Wine Python
 COPY requirements.txt .
-RUN wine python -m pip install --no-cache-dir --upgrade pip && \
-    wine python -m pip install --no-cache-dir -r requirements.txt && \
+RUN xvfb-run -a wine python -m pip install --no-cache-dir --upgrade pip && \
+    xvfb-run -a wine python -m pip install --no-cache-dir -r requirements.txt && \
     wineserver -w
 
 # 5. Copy worker application code
