@@ -215,7 +215,7 @@ export default function App() {
       />
 
       {/* Main Content Area */}
-      <main style={{ flex: 1, maxWidth: '1440px', width: '100%', margin: '0 auto', padding: '24px 28px' }}>
+      <main style={{ flex: 1, maxWidth: '1440px', width: '100%', margin: '0 auto', padding: '24px 32px 48px' }}>
         {currentView === 'copier' ? (
           <CopyTradingView
             groups={copyGroups}

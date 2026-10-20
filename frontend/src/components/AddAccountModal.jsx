@@ -49,14 +49,9 @@ export default function AddAccountModal({ nodes, onClose, onSave }) {
           alignItems: 'center',
           justifyContent: 'space-between'
         }}>
-          <div>
-            <h3 style={{ fontSize: '1.2rem', fontWeight: '800' }}>
-              Add MetaTrader 5 Account
-            </h3>
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-              Credentials are saved in the DB and dispatched to an online worker manager.
-            </p>
-          </div>
+          <h3 style={{ fontSize: '1.15rem', fontWeight: '800', margin: 0 }}>
+            Add MetaTrader 5 Account
+          </h3>
           <button onClick={onClose} className="btn btn-secondary btn-icon" style={{ borderRadius: '50%' }}>
             <X size={16} />
           </button>
@@ -160,9 +155,6 @@ export default function AddAccountModal({ nodes, onClose, onSave }) {
                 </option>
               ))}
             </select>
-            <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: '4px', display: 'block' }}>
-              Auto-balancing automatically selects the hardware node with the most available slots.
-            </span>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', marginBottom: '24px' }}>

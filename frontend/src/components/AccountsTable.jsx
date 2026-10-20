@@ -1,7 +1,7 @@
 import React from 'react';
 import { 
   Play, Square, RotateCw, Trash2, ExternalLink, Search, 
-  Filter, CheckCircle2, XCircle, AlertTriangle, Layers, Clock, ArrowUpRight, ArrowDownRight 
+  Layers, Clock 
 } from 'lucide-react';
 
 export default function AccountsTable({ 
@@ -43,7 +43,7 @@ export default function AccountsTable({
   });
 
   return (
-    <div className="glass-card" style={{ padding: '22px' }}>
+    <div className="glass-card" style={{ padding: '24px' }}>
       {/* Controls Bar */}
       <div style={{
         display: 'flex',
@@ -59,21 +59,21 @@ export default function AccountsTable({
             Managed MT5 Accounts
           </h2>
           <span style={{
-            fontSize: '0.8rem',
+            fontSize: '0.75rem',
             padding: '2px 8px',
             borderRadius: 'var(--radius-full)',
             background: 'rgba(255, 255, 255, 0.08)',
-            color: 'var(--text-muted)',
+            color: 'var(--text-secondary)',
             fontWeight: '600'
           }}>
             {filtered.length} of {accounts.length}
           </span>
           {nodeFilter && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(0, 242, 254, 0.1)', padding: '2px 8px', borderRadius: '4px' }}>
-              <span style={{ fontSize: '0.75rem', color: 'var(--accent-cyan)' }}>Node: {nodeFilter}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(99, 102, 241, 0.15)', border: '1px solid rgba(99, 102, 241, 0.3)', padding: '2px 8px', borderRadius: '4px' }}>
+              <span style={{ fontSize: '0.75rem', color: '#c7d2fe' }}>Node: {nodeFilter}</span>
               <button
                 onClick={() => setNodeFilter(null)}
-                style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: '0.85rem' }}
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.85rem' }}
               >
                 ×
               </button>
@@ -84,36 +84,40 @@ export default function AccountsTable({
         {/* Search & Status Filters */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
           {/* Status Pills */}
-          <div style={{ display: 'flex', background: 'rgba(0, 0, 0, 0.25)', padding: '3px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+          <div style={{ display: 'flex', background: 'rgba(0, 0, 0, 0.3)', padding: '3px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
             {[
               { id: 'all', label: 'All' },
               { id: 'active', label: 'Active' },
               { id: 'connected', label: 'Connected' },
               { id: 'stopped', label: 'Stopped' }
-            ].map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => setStatusFilter(tab.id)}
-                style={{
-                  background: statusFilter === tab.id ? 'rgba(0, 242, 254, 0.18)' : 'transparent',
-                  color: statusFilter === tab.id ? 'var(--accent-cyan)' : 'var(--text-muted)',
-                  border: 'none',
-                  padding: '5px 12px',
-                  borderRadius: '6px',
-                  fontSize: '0.78rem',
-                  fontWeight: '600',
-                  cursor: 'pointer',
-                  transition: 'all 0.15s ease'
-                }}
-              >
-                {tab.label}
-              </button>
-            ))}
+            ].map(tab => {
+              const isActive = statusFilter === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setStatusFilter(tab.id)}
+                  style={{
+                    background: isActive ? 'linear-gradient(90deg, rgba(99, 102, 241, 0.22), rgba(6, 182, 212, 0.1))' : 'transparent',
+                    color: isActive ? '#ffffff' : 'var(--text-secondary)',
+                    border: isActive ? '1px solid rgba(99, 102, 241, 0.4)' : '1px solid transparent',
+                    padding: '5px 12px',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '0.78rem',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                    boxShadow: isActive ? '0 2px 6px rgba(0, 0, 0, 0.3)' : 'none'
+                  }}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
           </div>
 
           {/* Search Box */}
           <div style={{ position: 'relative', width: '220px' }}>
-            <Search size={15} color="var(--text-dim)" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)' }} />
+            <Search size={15} color="var(--text-muted)" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)' }} />
             <input
               type="text"
               placeholder="Search login, server..."
@@ -127,26 +131,28 @@ export default function AccountsTable({
       </div>
 
       {/* Table */}
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.86rem' }}>
+      <div style={{ overflowX: 'auto', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.85rem' }}>
           <thead>
             <tr style={{
+              background: 'rgba(10, 16, 29, 0.85)',
               borderBottom: '1px solid var(--border-subtle)',
-              color: 'var(--text-muted)',
-              fontSize: '0.75rem',
+              color: 'var(--text-secondary)',
+              fontSize: '0.74rem',
+              fontWeight: '700',
               textTransform: 'uppercase',
-              letterSpacing: '0.04em'
+              letterSpacing: '0.05em'
             }}>
-              <th style={{ padding: '12px 14px' }}>Account</th>
-              <th style={{ padding: '12px 14px' }}>Broker & Server</th>
-              <th style={{ padding: '12px 14px' }}>Assigned Hardware</th>
-              <th style={{ padding: '12px 14px' }}>Status</th>
-              <th style={{ padding: '12px 14px' }}>Balance</th>
-              <th style={{ padding: '12px 14px' }}>Equity</th>
-              <th style={{ padding: '12px 14px' }}>Floating P/L</th>
-              <th style={{ padding: '12px 14px' }}>Margin Free</th>
-              <th style={{ padding: '12px 14px' }}>Open Orders</th>
-              <th style={{ padding: '12px 14px', textAlign: 'right' }}>Actions</th>
+              <th style={{ padding: '12px 16px' }}>Account</th>
+              <th style={{ padding: '12px 16px' }}>Broker & Server</th>
+              <th style={{ padding: '12px 16px' }}>Assigned Hardware</th>
+              <th style={{ padding: '12px 16px' }}>Status</th>
+              <th style={{ padding: '12px 16px' }}>Balance</th>
+              <th style={{ padding: '12px 16px' }}>Equity</th>
+              <th style={{ padding: '12px 16px' }}>Floating P/L</th>
+              <th style={{ padding: '12px 16px' }}>Margin Free</th>
+              <th style={{ padding: '12px 16px' }}>Orders</th>
+              <th style={{ padding: '12px 16px', textAlign: 'right' }}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -167,36 +173,34 @@ export default function AccountsTable({
                   <tr
                     key={acc.login}
                     style={{
-                      borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
+                      borderBottom: '1px solid var(--border-subtle)',
                       transition: 'background 0.15s ease'
                     }}
-                    onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)'}
+                    onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.025)'}
                     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                   >
                     {/* Account */}
-                    <td style={{ padding: '14px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <div>
-                          <div className="font-mono" style={{ fontWeight: '700', color: 'var(--text-main)', fontSize: '0.92rem' }}>
-                            {acc.login}
-                          </div>
-                          <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-                            {acc.name || 'MT5 Terminal'}
-                          </div>
-                        </div>
+                    <td style={{ padding: '14px 16px' }}>
+                      <div className="font-mono" style={{ fontWeight: '700', color: '#ffffff', fontSize: '0.92rem' }}>
+                        {acc.login}
                       </div>
+                      {acc.name && acc.name.trim() !== '' && acc.name !== 'MT5 Terminal' && (
+                        <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                          {acc.name}
+                        </div>
+                      )}
                     </td>
 
                     {/* Server */}
-                    <td style={{ padding: '14px' }}>
+                    <td style={{ padding: '14px 16px' }}>
                       <div style={{ fontWeight: '500', color: 'var(--text-main)' }}>{acc.server}</div>
-                      {acc.broker_name && (
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>{acc.broker_name}</div>
+                      {acc.broker_name && acc.broker_name !== acc.server && (
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{acc.broker_name}</div>
                       )}
                     </td>
 
                     {/* Assigned Hardware */}
-                    <td style={{ padding: '14px' }}>
+                    <td style={{ padding: '14px 16px' }}>
                       {acc.assigned_node_id ? (
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                           <span className="badge badge-node font-mono" style={{ fontSize: '0.72rem' }}>
@@ -211,10 +215,10 @@ export default function AccountsTable({
                     </td>
 
                     {/* Status */}
-                    <td style={{ padding: '14px' }}>
+                    <td style={{ padding: '14px 16px' }}>
                       {isStopped ? (
                         <span className="badge badge-stopped">
-                          <span className="dot-pulse" style={{ background: '#64748B' }}></span>
+                          <span className="dot-pulse" style={{ background: '#64748b' }}></span>
                           STOPPED
                         </span>
                       ) : isConn ? (
@@ -231,19 +235,19 @@ export default function AccountsTable({
                     </td>
 
                     {/* Balance */}
-                    <td style={{ padding: '14px' }} className="font-mono">
+                    <td style={{ padding: '14px 16px' }} className="font-mono">
                       ${(acc.balance || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
 
                     {/* Equity */}
-                    <td style={{ padding: '14px', fontWeight: '600', color: 'var(--accent-cyan)' }} className="font-mono">
+                    <td style={{ padding: '14px 16px', fontWeight: '600', color: 'var(--accent-cyan)' }} className="font-mono">
                       ${(acc.equity || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
 
                     {/* Floating P/L */}
-                    <td style={{ padding: '14px' }} className="font-mono">
+                    <td style={{ padding: '14px 16px' }} className="font-mono">
                       <span style={{
-                        color: isProfitPos ? '#34D399' : '#FB7185',
+                        color: isProfitPos ? '#34d399' : '#fb7185',
                         fontWeight: '700',
                         display: 'flex',
                         alignItems: 'center',
@@ -254,26 +258,28 @@ export default function AccountsTable({
                     </td>
 
                     {/* Free Margin */}
-                    <td style={{ padding: '14px', color: 'var(--text-muted)' }} className="font-mono">
+                    <td style={{ padding: '14px 16px', color: 'var(--text-muted)' }} className="font-mono">
                       ${(acc.margin_free || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
 
                     {/* Open & Pending Orders Badges */}
-                    <td style={{ padding: '14px' }}>
+                    <td style={{ padding: '14px 16px' }}>
                       <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                         <button
                           onClick={() => onSelectAccount(acc)}
                           style={{
-                            background: (acc.open_positions_count || 0) > 0 ? 'rgba(0, 242, 254, 0.12)' : 'rgba(255, 255, 255, 0.04)',
-                            border: (acc.open_positions_count || 0) > 0 ? '1px solid rgba(0, 242, 254, 0.3)' : '1px solid var(--border-subtle)',
-                            borderRadius: '6px',
-                            color: (acc.open_positions_count || 0) > 0 ? 'var(--accent-cyan)' : 'var(--text-dim)',
+                            background: (acc.open_positions_count || 0) > 0 ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255, 255, 255, 0.04)',
+                            border: (acc.open_positions_count || 0) > 0 ? '1px solid rgba(99, 102, 241, 0.35)' : '1px solid var(--border-subtle)',
+                            borderRadius: 'var(--radius-sm)',
+                            color: (acc.open_positions_count || 0) > 0 ? '#c7d2fe' : 'var(--text-dim)',
                             padding: '4px 8px',
-                            fontSize: '0.76rem',
+                            fontSize: '0.75rem',
+                            fontWeight: '600',
                             cursor: 'pointer',
                             display: 'inline-flex',
                             alignItems: 'center',
-                            gap: '5px'
+                            gap: '5px',
+                            transition: 'all 0.15s ease'
                           }}
                         >
                           <Layers size={12} />
@@ -284,16 +290,18 @@ export default function AccountsTable({
                           <button
                             onClick={() => onSelectAccount(acc)}
                             style={{
-                              background: 'rgba(245, 158, 11, 0.12)',
-                              border: '1px solid rgba(245, 158, 11, 0.3)',
-                              borderRadius: '6px',
-                              color: '#FBBF24',
+                              background: 'rgba(245, 158, 11, 0.15)',
+                              border: '1px solid rgba(245, 158, 11, 0.35)',
+                              borderRadius: 'var(--radius-sm)',
+                              color: '#fbbf24',
                               padding: '4px 8px',
-                              fontSize: '0.76rem',
+                              fontSize: '0.75rem',
+                              fontWeight: '600',
                               cursor: 'pointer',
                               display: 'inline-flex',
                               alignItems: 'center',
-                              gap: '5px'
+                              gap: '5px',
+                              transition: 'all 0.15s ease'
                             }}
                           >
                             <Clock size={12} />
@@ -304,27 +312,27 @@ export default function AccountsTable({
                     </td>
 
                     {/* Actions */}
-                    <td style={{ padding: '14px', textAlign: 'right' }}>
+                    <td style={{ padding: '14px 16px', textAlign: 'right' }}>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px' }}>
                         {isStopped ? (
                           <button
                             id={`btn-start-${acc.login}`}
                             className="btn btn-secondary btn-icon"
-                            style={{ color: '#34D399' }}
+                            style={{ color: '#34d399' }}
                             title="Start Terminal"
                             onClick={() => onStart(acc.login)}
                           >
-                            <Play size={13} fill="#34D399" />
+                            <Play size={13} fill="#34d399" />
                           </button>
                         ) : (
                           <button
                             id={`btn-stop-${acc.login}`}
                             className="btn btn-secondary btn-icon"
-                            style={{ color: '#F43F5E' }}
+                            style={{ color: '#fb7185' }}
                             title="Stop Terminal"
                             onClick={() => onStop(acc.login)}
                           >
-                            <Square size={13} fill="#F43F5E" />
+                            <Square size={13} fill="#fb7185" />
                           </button>
                         )}
 
@@ -350,7 +358,7 @@ export default function AccountsTable({
                         <button
                           id={`btn-delete-${acc.login}`}
                           className="btn btn-secondary btn-icon"
-                          style={{ color: 'var(--text-dim)' }}
+                          style={{ color: 'var(--text-muted)' }}
                           title="Delete Account"
                           onClick={() => {
                             if (window.confirm(`Delete MT5 Account ${acc.login}? This stops the terminal and removes it.`)) {

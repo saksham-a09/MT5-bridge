@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { X, HardDrive, Copy, Check, Server, Terminal, Shield, ArrowRight } from 'lucide-react';
+import { X, HardDrive, Copy, Check, Terminal, ArrowRight } from 'lucide-react';
 import { fetchQuickSetupInfo } from '../services/api';
 
 export default function AddNodeModal({ onClose, onRegistered }) {
-  const [nodeName, setNodeName] = useState('New Hardware VPS');
+  const [nodeName, setNodeName] = useState('New Hardware Node');
   const [nodeId, setNodeId] = useState(`node-${Math.random().toString(36).substring(2, 8)}`);
   const [apiKey, setApiKey] = useState(`key_${Math.random().toString(36).substring(2, 12)}`);
   const [maxTerminals, setMaxTerminals] = useState(30);
@@ -18,17 +18,13 @@ export default function AddNodeModal({ onClose, onRegistered }) {
     }).catch(() => {});
   }, []);
 
-  const envSnippet = `# MT5 Worker Manager Configuration for ${nodeName}
+  const envSnippet = `# MT5 Worker Configuration
 HUB_URL=${hubUrl}
 NODE_ID=${nodeId}
 NODE_NAME="${nodeName}"
 NODE_API_KEY=${apiKey}
-
-# Path to MT5 template folder on this hardware machine
 MASTER_MT5_DIR=C:\\MT5_Master
 CLIENTS_DIR=CLIENTS
-
-# Maximum MT5 terminals for this hardware capacity
 MAX_TERMINALS=${maxTerminals}
 POLL_INTERVAL=8
 `;
@@ -47,7 +43,7 @@ POLL_INTERVAL=8
         name: nodeName,
         api_key: apiKey,
         max_terminals: parseInt(maxTerminals, 10),
-        os_info: 'Remote VPS / Dedicated PC'
+        os_info: 'Remote VPS'
       });
       onClose();
     } catch (err) {
@@ -59,36 +55,31 @@ POLL_INTERVAL=8
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '680px' }}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '620px' }}>
         {/* Header */}
         <div style={{
-          padding: '20px 24px',
+          padding: '18px 24px',
           borderBottom: '1px solid var(--border-subtle)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between'
         }}>
-          <div>
-            <h3 style={{ fontSize: '1.2rem', fontWeight: '800', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <HardDrive size={18} color="var(--accent-cyan)" />
-              Add Worker Manager (Scale to New Hardware)
-            </h3>
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-              Add remote VPS or PC machines to horizontally scale your terminal execution capacity.
-            </p>
-          </div>
+          <h3 style={{ fontSize: '1.15rem', fontWeight: '800', display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
+            <HardDrive size={18} color="var(--accent-indigo)" />
+            Add Hardware Node
+          </h3>
           <button onClick={onClose} className="btn btn-secondary btn-icon" style={{ borderRadius: '50%' }}>
-            <X size={16} />
+            <X size={15} />
           </button>
         </div>
 
         {/* Content */}
-        <div style={{ padding: '24px' }}>
+        <div style={{ padding: '22px 24px' }}>
           {/* Node Config Fields */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '14px' }}>
             <div>
-              <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '6px', fontWeight: '600' }}>
-                Hardware Node Name *
+              <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '6px', fontWeight: '600' }}>
+                Node Name *
               </label>
               <input
                 type="text"
@@ -99,8 +90,8 @@ POLL_INTERVAL=8
               />
             </div>
             <div>
-              <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '6px', fontWeight: '600' }}>
-                Unique Node ID *
+              <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '6px', fontWeight: '600' }}>
+                Node ID *
               </label>
               <input
                 type="text"
@@ -112,10 +103,10 @@ POLL_INTERVAL=8
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '20px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '16px' }}>
             <div>
-              <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '6px', fontWeight: '600' }}>
-                Max Terminal Slots (Capacity)
+              <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '6px', fontWeight: '600' }}>
+                Max Capacity (Slots)
               </label>
               <input
                 type="number"
@@ -126,7 +117,7 @@ POLL_INTERVAL=8
               />
             </div>
             <div>
-              <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '6px', fontWeight: '600' }}>
+              <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '6px', fontWeight: '600' }}>
                 Central Hub URL
               </label>
               <input
@@ -139,64 +130,60 @@ POLL_INTERVAL=8
             </div>
           </div>
 
-          {/* Quick Setup Instructions */}
+          {/* Quick Setup Snippet */}
           <div style={{
             background: 'rgba(0, 0, 0, 0.3)',
-            borderRadius: '10px',
+            borderRadius: 'var(--radius-md)',
             border: '1px solid var(--border-subtle)',
-            padding: '16px',
-            marginBottom: '20px'
+            padding: '14px',
+            marginBottom: '16px'
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
-              <span style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--accent-cyan)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Terminal size={14} /> Configuration File for New Hardware (.env)
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+              <span style={{ fontSize: '0.78rem', fontWeight: '600', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Terminal size={13} color="var(--accent-indigo)" /> worker_node/.env
               </span>
               <button
                 onClick={handleCopy}
-                className="btn btn-secondary"
-                style={{ fontSize: '0.74rem', padding: '4px 10px' }}
+                className="btn btn-secondary btn-sm"
+                style={{ fontSize: '0.72rem', padding: '3px 8px' }}
               >
-                {copied ? <Check size={12} color="#10B981" /> : <Copy size={12} />}
-                <span>{copied ? 'Copied!' : 'Copy .env snippet'}</span>
+                {copied ? <Check size={12} color="#10b981" /> : <Copy size={12} />}
+                <span>{copied ? 'Copied' : 'Copy'}</span>
               </button>
             </div>
             <pre style={{
-              background: '#070B14',
-              padding: '12px',
-              borderRadius: '6px',
+              background: 'var(--bg-input)',
+              border: '1px solid var(--border-subtle)',
+              padding: '10px 12px',
+              borderRadius: 'var(--radius-sm)',
               fontFamily: 'var(--font-mono)',
-              fontSize: '0.76rem',
-              color: '#38BDF8',
-              overflowX: 'auto'
+              fontSize: '0.74rem',
+              color: '#c7d2fe',
+              overflowX: 'auto',
+              margin: 0
             }}>
               {envSnippet}
             </pre>
           </div>
 
-          {/* 3 Steps */}
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: '1.6', marginBottom: '20px' }}>
-            <strong style={{ color: 'var(--text-main)', display: 'block', marginBottom: '4px' }}>How to run on the new hardware:</strong>
-            <ol style={{ paddingLeft: '20px' }}>
-              <li>Copy the <code style={{ color: 'var(--accent-cyan)' }}>worker_node</code> directory to your remote VPS or PC.</li>
-              <li>Save the configuration above into <code style={{ color: 'var(--accent-cyan)' }}>worker_node/.env</code>.</li>
-              <li>Double-click <code style={{ color: 'var(--accent-cyan)' }}>start_worker.bat</code> or run <code style={{ color: 'var(--accent-cyan)' }}>python worker_manager.py</code>.</li>
-            </ol>
+          <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginBottom: '20px' }}>
+            Paste into <code style={{ color: 'var(--accent-cyan)' }}>worker_node/.env</code> on the remote machine, then run <code style={{ color: 'var(--accent-cyan)' }}>start_worker.bat</code>.
           </div>
 
           {/* Action buttons */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
-            <button type="button" className="btn btn-secondary" onClick={onClose}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={onClose}>
               Cancel
             </button>
             <button
               id="btn-register-node"
               type="button"
-              className="btn btn-primary"
+              className="btn btn-primary btn-sm"
               onClick={handleRegister}
               disabled={loading}
             >
-              <span>{loading ? 'Registering...' : 'Register Hardware Node'}</span>
-              <ArrowRight size={15} />
+              <span>{loading ? 'Registering...' : 'Register Node'}</span>
+              <ArrowRight size={14} />
             </button>
           </div>
         </div>

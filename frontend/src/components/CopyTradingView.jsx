@@ -112,13 +112,10 @@ export default function CopyTradingView({
       {/* Top Banner / Actions */}
       <div className="copier-header-bar">
         <div>
-          <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-            <Zap className="text-amber" size={24} />
-            Distributed Trade Copier
+          <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', margin: 0 }}>
+            <Zap className="text-amber" size={20} />
+            Trade Copier
           </h2>
-          <p className="text-muted" style={{ fontSize: '0.85rem' }}>
-            Ultra-low latency master-to-slave trade mirroring with automatic lot scaling and exact order matching.
-          </p>
         </div>
 
         <div style={{ display: 'flex', gap: '0.6rem' }}>
@@ -217,11 +214,11 @@ export default function CopyTradingView({
                     {/* Master Box */}
                     <div className="role-box master-box">
                       <div className="role-header">
-                        <span className="master-crown">👑 MASTER</span>
+                        <span className="master-crown" style={{ fontSize: '0.72rem', letterSpacing: '0.04em' }}>MASTER</span>
                         <span className="acc-login-tag">{grp.master_login}</span>
                       </div>
                       <div className="role-body">
-                        <div className="role-name">{grp.master_name || 'Master Account'}</div>
+                        <div className="role-name">{grp.master_name || 'Master'}</div>
                         <div className="role-sub text-muted">{grp.master_server}</div>
                       </div>
                     </div>
@@ -230,14 +227,13 @@ export default function CopyTradingView({
                     <div className="flow-arrow-col">
                       <span className="risk-mode-tag">
                         {grp.risk_type === 'multiplier' && `${grp.multiplier}x Multiplier`}
-                        {grp.risk_type === 'equity_ratio' && `Equity Proportional`}
-                        {grp.risk_type === 'balance_ratio' && `Balance Proportional`}
+                        {grp.risk_type === 'equity_ratio' && `Equity Ratio`}
+                        {grp.risk_type === 'balance_ratio' && `Balance Ratio`}
                         {grp.risk_type === 'fixed_lot' && `${grp.fixed_lot} Fixed Lots`}
                       </span>
                       <div className="arrow-line">
-                        <ArrowRight size={20} className="arrow-icon" />
+                        <ArrowRight size={18} className="arrow-icon" />
                       </div>
-                      <span className="latency-est">Sub-100ms Mirror</span>
                     </div>
 
                     {/* Slaves List Box */}
@@ -391,8 +387,8 @@ export default function CopyTradingView({
 
       {/* CREATE GROUP MODAL */}
       {showCreateModal && (
-        <div className="modal-backdrop">
-          <div className="modal-dialog">
+        <div className="modal-overlay" onClick={() => setShowCreateModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                 <Zap className="text-amber" size={20} />
@@ -543,8 +539,8 @@ export default function CopyTradingView({
 
       {/* ADD SLAVE MODAL */}
       {selectedGroupForSlave && (
-        <div className="modal-backdrop">
-          <div className="modal-dialog" style={{ maxWidth: '440px' }}>
+        <div className="modal-overlay" onClick={() => setSelectedGroupForSlave(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '440px' }}>
             <div className="modal-header">
               <h3 className="modal-title">Attach Slave to {selectedGroupForSlave.name}</h3>
               <button className="btn-close" onClick={() => setSelectedGroupForSlave(null)}>×</button>
