@@ -581,21 +581,37 @@ class MT5Worker:
             my_pid = os.getpid()
             clone_dir_abs = os.path.abspath(self.clone_dir).lower()
             clone_name = os.path.basename(self.clone_dir).lower()
-            for proc in psutil.process_iter(['pid', 'name', 'exe', 'cmdline']):
+            try:
+                procs = list(psutil.process_iter())
+            except Exception:
+                procs = []
+            for proc in procs:
                 try:
-                    if proc.info.get('pid') == my_pid:
+                    if proc.pid == my_pid:
                         continue
-                    exe = proc.info.get('exe')
+                    exe = None
+                    try:
+                        exe = proc.exe()
+                    except Exception:
+                        pass
                     if exe and os.path.abspath(exe).lower().startswith(clone_dir_abs):
                         return proc
-                    cmdline = proc.info.get('cmdline') or []
+                    cmdline = []
+                    try:
+                        cmdline = proc.cmdline() or []
+                    except Exception:
+                        pass
                     cmdline_str = " ".join(cmdline).lower()
                     if "worker.py" in cmdline_str:
                         continue
-                    name = (proc.info.get('name') or '').lower()
+                    name = ''
+                    try:
+                        name = (proc.name() or '').lower()
+                    except Exception:
+                        pass
                     if ("terminal" in name or "wine" in name) and (clone_dir_abs in cmdline_str or clone_name in cmdline_str):
                         return proc
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                except Exception:
                     pass
         except Exception:
             pass
@@ -900,16 +916,32 @@ class MT5Worker:
             my_pid = os.getpid()
             clone_dir_abs = os.path.abspath(self.clone_dir).lower()
             clone_name = os.path.basename(self.clone_dir).lower()
-            for proc in psutil.process_iter(['pid', 'name', 'exe', 'cmdline']):
+            try:
+                procs = list(psutil.process_iter())
+            except Exception:
+                procs = []
+            for proc in procs:
                 try:
-                    if proc.info.get('pid') == my_pid:
+                    if proc.pid == my_pid:
                         continue
-                    cmdline = proc.info.get('cmdline') or []
+                    cmdline = []
+                    try:
+                        cmdline = proc.cmdline() or []
+                    except Exception:
+                        pass
                     cmdline_str = " ".join(cmdline).lower()
                     if "worker.py" in cmdline_str:
                         continue
-                    exe = proc.info.get('exe')
-                    name = (proc.info.get('name') or '').lower()
+                    exe = None
+                    try:
+                        exe = proc.exe()
+                    except Exception:
+                        pass
+                    name = ''
+                    try:
+                        name = (proc.name() or '').lower()
+                    except Exception:
+                        pass
                     matches_dir = exe and os.path.abspath(exe).lower().startswith(clone_dir_abs)
                     matches_cmd = ("terminal" in name or "wine" in name) and (clone_dir_abs in cmdline_str or clone_name in cmdline_str)
                     if matches_dir or matches_cmd:
