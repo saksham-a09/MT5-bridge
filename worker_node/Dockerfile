@@ -29,8 +29,9 @@ RUN Xvfb :99 -screen 0 1024x768x16 -nolisten tcp & \
     XVFB_PID=$! && \
     sleep 2 && \
     wineboot --init && wineserver -w && \
+    wine reg add 'HKCU\Software\Wine' /v Version /t REG_SZ /d win10 /f && wineserver -w && \
     wget -q https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe -O /tmp/python-installer.exe && \
-    wine start /wait /tmp/python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_pip=1 && \
+    wine /tmp/python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_pip=1 && \
     wineserver -w && \
     rm -f /tmp/python-installer.exe && \
     kill $XVFB_PID
