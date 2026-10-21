@@ -118,7 +118,7 @@ POLL_INTERVAL=8
             </div>
             <div>
               <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '6px', fontWeight: '600' }}>
-                Central Hub URL
+                Server URL
               </label>
               <input
                 type="text"

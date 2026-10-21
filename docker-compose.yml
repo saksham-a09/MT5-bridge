@@ -1,10 +1,10 @@
 services:
-  # Central Hub API Controller (FastAPI)
+  # API Controller (FastAPI)
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: mt5-hub-backend
+    container_name: backend
     restart: unless-stopped
     environment:
       - HUB_HOST=0.0.0.0
@@ -30,7 +30,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: mt5-hub-frontend
+    container_name: frontend
     restart: unless-stopped
     ports:
       - "80:80"        # Web Dashboard (HTTP)

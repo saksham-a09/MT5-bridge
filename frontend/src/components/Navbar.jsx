@@ -26,7 +26,7 @@ export default function Navbar({
       zIndex: 100
     }}>
       {/* Brand */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center' }}>
         <div style={{
           width: '36px',
           height: '36px',
@@ -39,20 +39,6 @@ export default function Navbar({
           boxShadow: '0 0 14px rgba(99, 102, 241, 0.35)'
         }}>
           <Server size={20} color="#ffffff" />
-        </div>
-        <div>
-          <h1 style={{
-            fontSize: '1.15rem',
-            fontWeight: '800',
-            letterSpacing: '-0.02em',
-            background: 'linear-gradient(135deg, #ffffff 40%, #94a3b8 100%)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            margin: 0,
-            lineHeight: 1.2
-          }}>
-            MT5 HUB
-          </h1>
         </div>
       </div>
 
