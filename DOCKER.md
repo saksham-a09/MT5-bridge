@@ -34,10 +34,19 @@ That's it!
 
 If you have a Linux VPS (Ubuntu, Debian, etc.) and want to run MT5 trading terminals inside Docker:
 
-### Step 1: Copy `worker_node` to the VPS
+### Step 1: Clone Repository and Pull Git LFS Binaries
 ```bash
+# 1. Install Git LFS so large MT5 binaries (*.exe, *.dll) are downloaded instead of text pointers
+sudo apt-get update && sudo apt-get install -y git-lfs
+
+# 2. Clone repository and pull LFS objects
 git clone <your-repo>
-cd "MT5 bridge/worker_node"
+cd "MT5-bridge"
+git lfs install
+git lfs pull
+
+# 3. Enter worker_node directory
+cd worker_node
 ```
 
 ### Step 2: Configure Environment Variables

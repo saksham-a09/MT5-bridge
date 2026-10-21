@@ -40,6 +40,29 @@ def is_wine():
             return True
     return False
 
+def validate_terminal_executable(path: str) -> tuple[bool, str]:
+    """Validates that a terminal executable path exists and is a valid Windows PE binary (not a Git LFS pointer or empty file)."""
+    if not path or not os.path.isfile(path):
+        return False, f"Executable not found at path: {path}"
+    try:
+        size = os.path.getsize(path)
+        if size == 0:
+            return False, f"Executable file is 0 bytes: {path}"
+        with open(path, "rb") as f:
+            header = f.read(128)
+        if header.startswith(b"version https://git-lfs"):
+            return False, (
+                f"File '{path}' is a Git LFS pointer text file ({size} bytes), NOT a real binary! "
+                "Run 'sudo apt-get install -y git-lfs && git lfs install && git lfs pull' on your Linux host."
+            )
+        if not header.startswith(b"MZ"):
+            return False, f"File '{path}' does not have a valid Windows PE header (expected 'MZ', found {header[:4]!r})."
+        if size < 5 * 1024 * 1024:
+            return False, f"File '{path}' is suspiciously small ({size} bytes) for an MT5 terminal executable."
+        return True, "Valid"
+    except Exception as e:
+        return False, f"Failed to inspect executable '{path}': {e}"
+
 def trim_working_set(pid=None):
     """Trims unused working set memory pages on Windows to minimize physical RAM footprint."""
     if os.name != "nt" or is_wine():
@@ -252,11 +275,18 @@ class WorkerManager:
         login_str = str(login)
         clone_dir = os.path.abspath(os.path.join(self.clients_dir, f"clone_{login_str}"))
         worker_script = os.path.abspath(os.path.join(self.script_dir, "worker.py"))
-        terminal_exe = os.path.abspath(os.path.join(self.master_mt5, "terminal64.exe"))
-        if not os.path.isfile(terminal_exe):
-            terminal_exe = os.path.abspath(os.path.join(self.master_mt5, "terminal.exe"))
+        terminal_exe = None
+        for name in ["terminal64.exe", "terminal.exe"]:
+            candidate = os.path.abspath(os.path.join(self.master_mt5, name))
+            if os.path.isfile(candidate):
+                valid, reason = validate_terminal_executable(candidate)
+                if valid:
+                    terminal_exe = candidate
+                    break
+                else:
+                    self.log(f"Candidate master terminal '{candidate}' is invalid: {reason}", level="ERROR")
 
-        if not os.path.isfile(terminal_exe):
+        if not terminal_exe:
             # Check candidate directories
             candidates = [
                 self.master_mt5,
@@ -274,12 +304,20 @@ class WorkerManager:
                 for exe_name in ["terminal64.exe", "terminal.exe"]:
                     cand_exe = os.path.abspath(os.path.join(cand, exe_name))
                     if os.path.isfile(cand_exe):
-                        terminal_exe = cand_exe
-                        self.master_mt5 = os.path.dirname(cand_exe)
-                        self.log(f"Auto-discovered master MT5 at: {self.master_mt5}")
-                        break
-                if os.path.isfile(terminal_exe):
+                        valid, reason = validate_terminal_executable(cand_exe)
+                        if valid:
+                            terminal_exe = cand_exe
+                            self.master_mt5 = os.path.dirname(cand_exe)
+                            self.log(f"Auto-discovered master MT5 at: {self.master_mt5}")
+                            break
+                        else:
+                            self.log(f"Found '{cand_exe}' but it is invalid: {reason}", level="WARNING")
+                if terminal_exe:
                     break
+
+        if not terminal_exe:
+            self.log(f"CRITICAL: No valid MT5 terminal binary found for login {login_str}! Cannot spawn worker.", level="ERROR")
+            return False
 
         os.makedirs(clone_dir, exist_ok=True)
         log_path = os.path.join(clone_dir, f"worker_{login_str}_stdout.log")

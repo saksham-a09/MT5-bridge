@@ -49,6 +49,29 @@ def is_wine():
             return True
     return False
 
+def validate_terminal_executable(path: str) -> tuple[bool, str]:
+    """Validates that a terminal executable path exists and is a valid Windows PE binary (not a Git LFS pointer or empty file)."""
+    if not path or not os.path.isfile(path):
+        return False, f"Executable not found at path: {path}"
+    try:
+        size = os.path.getsize(path)
+        if size == 0:
+            return False, f"Executable file is 0 bytes: {path}"
+        with open(path, "rb") as f:
+            header = f.read(128)
+        if header.startswith(b"version https://git-lfs"):
+            return False, (
+                f"File '{path}' is a Git LFS pointer text file ({size} bytes), NOT a real binary! "
+                "Run 'sudo apt-get install -y git-lfs && git lfs install && git lfs pull' on your Linux host."
+            )
+        if not header.startswith(b"MZ"):
+            return False, f"File '{path}' does not have a valid Windows PE header (expected 'MZ', found {header[:4]!r})."
+        if size < 5 * 1024 * 1024:
+            return False, f"File '{path}' is suspiciously small ({size} bytes) for an MT5 terminal executable."
+        return True, "Valid"
+    except Exception as e:
+        return False, f"Failed to inspect executable '{path}': {e}"
+
 def update_ini_template(template_content, login, password, server, expert=None, symbol=None, period=None):
     """Case-preserving config.ini generator. Omits empty/invalid Expert to prevent 'Cannot load config on start'."""
     lines = template_content.splitlines()
@@ -388,17 +411,37 @@ class MT5Worker:
 
     def _has_executable(self):
         for name in ["terminal64.exe", "terminal.exe"]:
-            if os.path.isfile(os.path.join(self.clone_dir, name)):
-                return True
+            p = os.path.join(self.clone_dir, name)
+            if os.path.isfile(p):
+                valid, reason = validate_terminal_executable(p)
+                if valid:
+                    return True
+                else:
+                    self.logger.warning(f"Corrupted or invalid executable in clone dir '{p}': {reason}. Removing to force re-clone.")
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
         return False
 
     def _get_executable(self):
         for name in ["terminal64.exe", "terminal.exe"]:
             p = os.path.join(self.clone_dir, name)
             if os.path.isfile(p):
-                return p
+                valid, _ = validate_terminal_executable(p)
+                if valid:
+                    return p
+                else:
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
 
         if os.path.isfile(self.terminal_path):
+            valid, reason = validate_terminal_executable(self.terminal_path)
+            if not valid:
+                self.logger.critical(f"Master terminal executable invalid: {reason}")
+                return None
             shutil_dest = os.path.join(self.clone_dir, os.path.basename(self.terminal_path))
             try:
                 shutil.copy2(self.terminal_path, shutil_dest)
@@ -418,6 +461,17 @@ class MT5Worker:
             if not os.path.isdir(master_dir):
                 self.logger.error(f"Master MT5 directory '{master_dir}' does not exist.")
                 return False
+
+            # Pre-check master executable validity before cloning
+            for exe_name in ["terminal64.exe", "terminal.exe"]:
+                m_exe = os.path.join(master_dir, exe_name)
+                if os.path.isfile(m_exe):
+                    m_valid, m_reason = validate_terminal_executable(m_exe)
+                    if not m_valid:
+                        self.logger.critical(f"Master MT5 binary is invalid: {m_reason}")
+                        return False
+                    break
+
             try:
                 def _ignore_bloat(path, names):
                     # Exclude heavy non-essential folders to save disk space and RAM
@@ -436,6 +490,11 @@ class MT5Worker:
         executable = self._get_executable()
         if not executable:
             self.logger.error("No valid MT5 terminal executable found.")
+            return False
+
+        valid, reason = validate_terminal_executable(executable)
+        if not valid:
+            self.logger.critical(f"Aborting launch: {reason}")
             return False
 
         # 2. Generate config.ini
