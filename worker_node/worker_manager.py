@@ -361,6 +361,16 @@ class WorkerManager:
                 creationflags=creation_flags
             )
             log_file.close()
+
+            try:
+                p = psutil.Process(proc.pid)
+                if os.name == "nt":
+                    p.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+                else:
+                    p.nice(10)
+            except Exception:
+                pass
+
             return proc, clone_dir
         except Exception as e:
             self.log(f"Failed to spawn worker for {login_str}: {e}", level="ERROR")
@@ -549,6 +559,9 @@ class WorkerManager:
         last_cmd_poll = 0
         last_mem_trim = 0
 
+        cmd_poll_interval = float(os.environ.get("COMMAND_POLL_INTERVAL", "0.15"))
+        telemetry_interval = float(os.environ.get("TELEMETRY_INTERVAL", "2.0"))
+
         while self.is_running:
             now = time.time()
 
@@ -558,8 +571,8 @@ class WorkerManager:
             # 2. Check and report execution results from workers (< 10ms)
             self.collect_and_report_results()
 
-            # 3. High-speed fallback command poll (every 50ms)
-            if now - last_cmd_poll >= 0.05:
+            # 3. High-speed fallback command poll (default 150ms)
+            if now - last_cmd_poll >= cmd_poll_interval:
                 try:
                     self.poll_and_dispatch_commands()
                 except Exception:
@@ -582,8 +595,8 @@ class WorkerManager:
                     self.log(f"Account sync error: {e}", level="ERROR")
                 last_poll = now
 
-            # 6. Full Routine Telemetry Reporting (every 1s)
-            if now - last_telemetry >= 1.0:
+            # 6. Full Routine Telemetry Reporting (default 2.0s)
+            if now - last_telemetry >= telemetry_interval:
                 try:
                     self.report_telemetry()
                 except Exception as e:
@@ -604,7 +617,7 @@ class WorkerManager:
                     pass
                 last_mem_trim = now
 
-            time.sleep(0.02)
+            time.sleep(0.05)
 
         self.shutdown()
 

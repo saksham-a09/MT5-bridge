@@ -4,7 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV WINEDEBUG=-all
 ENV WINEARCH=win64
 ENV WINEPREFIX=/root/.wine
-ENV WINEDLLOVERRIDES="mscoree,mshtml="
+ENV WINEDLLOVERRIDES="mscoree,mshtml,winepulse,winealsa="
 ENV PATH="/opt/wine-stable/bin:${PATH}"
 ENV DISPLAY=:99
 

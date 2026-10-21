@@ -202,18 +202,30 @@ def patch_mt5_experts_config(clone_dir, logger=None):
             "Enabled": "1",
             "AllowLiveTrading": "1",
             "AllowDllImport": "1",
-            "ConfirmDllCalls": "0"
+            "ConfirmDllCalls": "0",
+            "Notifications": "0",
+            "Sound": "0"
         },
         "common": {
             "NewsEnable": "0",
             "EnableNews": "0",
             "SoundEnable": "0",
-            "DDEEnable": "0"
+            "DDEEnable": "0",
+            "FtpEnable": "0",
+            "MailEnable": "0",
+            "CertificatesEnable": "0",
+            "CommunityEnable": "0",
+            "PushEnable": "0",
+            "ProxyEnable": "0"
         },
         "charts": {
-            "MaxBars": "2000",
+            "MaxBars": "100",
             "PrintColor": "0",
-            "SaveDeleted": "0"
+            "SaveDeleted": "0",
+            "ShowTradeLevels": "0",
+            "ShowOHLC": "0",
+            "ShowVolumes": "0",
+            "ColorMode": "0"
         }
     }
 
@@ -325,6 +337,8 @@ class MT5Worker:
         self.last_pos_sig = None
         self.last_telemetry_data = {}
         self.last_mem_trim = 0
+        self.last_deals_time = 0
+        self.cached_deals = []
         self.urgent_telemetry_file = os.path.join(self.clone_dir, "urgent_telemetry.json")
 
         log_file = os.path.join(self.clone_dir, f"worker_{self.login_id}.log")
@@ -342,6 +356,67 @@ class MT5Worker:
         
         self.logger.info("Worker instance initialized.")
         patch_mt5_experts_config(self.clone_dir, self.logger)
+
+    def optimize_process_priority(self):
+        """Sets BELOW_NORMAL priority for terminal and worker process to prevent CPU starvation under high multi-terminal density."""
+        try:
+            cur_p = psutil.Process(os.getpid())
+            if os.name == "nt":
+                cur_p.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+            else:
+                cur_p.nice(10)
+        except Exception:
+            pass
+
+        try:
+            term_proc = self.get_terminal_process()
+            if term_proc:
+                if os.name == "nt":
+                    term_proc.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+                else:
+                    term_proc.nice(10)
+        except Exception:
+            pass
+
+    def prune_market_watch(self):
+        """Hides untraded symbols from Market Watch so MT5 stops receiving and processing unnecessary tick streams on CPU."""
+        if not mt5:
+            return
+        try:
+            active_symbols = set()
+            if self.symbol:
+                active_symbols.add(self.symbol.strip().upper())
+
+            positions = mt5.positions_get()
+            if positions:
+                for p in positions:
+                    if p.symbol:
+                        active_symbols.add(p.symbol.strip().upper())
+
+            orders = mt5.orders_get()
+            if orders:
+                for o in orders:
+                    if o.symbol:
+                        active_symbols.add(o.symbol.strip().upper())
+
+            if not active_symbols:
+                active_symbols.add("XAUUSD")
+
+            # Keep active symbols enabled
+            for sym in active_symbols:
+                mt5.symbol_select(sym, True)
+
+            # Prune all other selected symbols
+            all_selected = mt5.symbols_get(selected=True) or ()
+            hidden = 0
+            for s in all_selected:
+                if s.name.upper() not in active_symbols:
+                    if mt5.symbol_select(s.name, False):
+                        hidden += 1
+            if hidden > 0:
+                self.logger.info(f"CPU Tuning: Pruned {hidden} inactive symbols from Market Watch (Active: {list(active_symbols)}).")
+        except Exception as e:
+            self.logger.debug(f"Market Watch pruning skipped: {e}")
 
     def ensure_autotrading_enabled(self):
         """Checks if MT5 terminal has AlgoTrading (automated trading) enabled. If not, auto-enables via Win32."""
@@ -626,6 +701,8 @@ class MT5Worker:
                     else:
                         self.logger.info(f"Logged into MT5 account {self.login_id}.")
                 self.ensure_autotrading_enabled()
+                self.prune_market_watch()
+                self.optimize_process_priority()
                 return True
             else:
                 self.logger.warning(f"MT5 init attempt {attempt}/{max_attempts} failed: {mt5.last_error()}")
@@ -788,24 +865,28 @@ class MT5Worker:
                             })
                     data["pending_orders"] = orders_list
 
-                    # Recent history deals (last 5)
-                    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-                    date_from = now - datetime.timedelta(days=7)
-                    deals = mt5.history_deals_get(date_from, now)
-                    if deals:
-                        recent_deals = []
-                        for d in reversed(deals[-10:]):
-                            if d.entry in (1, 2, 3) and d.symbol:
-                                recent_deals.append({
-                                    "ticket": d.ticket,
-                                    "symbol": d.symbol,
-                                    "type": "BUY" if d.type == 0 else "SELL",
-                                    "volume": d.volume,
-                                    "price": d.price,
-                                    "profit": round(d.profit, 2),
-                                    "time": datetime.datetime.fromtimestamp(d.time, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-                                })
-                        data["deals_history"] = recent_deals[:5]
+                    # Recent history deals (last 5) - cached every 15s to conserve CPU
+                    now_ts = time.time()
+                    if now_ts - self.last_deals_time >= 15.0 or not self.cached_deals:
+                        self.last_deals_time = now_ts
+                        now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+                        date_from = now - datetime.timedelta(days=7)
+                        deals = mt5.history_deals_get(date_from, now)
+                        if deals:
+                            recent_deals = []
+                            for d in reversed(deals[-10:]):
+                                if d.entry in (1, 2, 3) and d.symbol:
+                                    recent_deals.append({
+                                        "ticket": d.ticket,
+                                        "symbol": d.symbol,
+                                        "type": "BUY" if d.type == 0 else "SELL",
+                                        "volume": d.volume,
+                                        "price": d.price,
+                                        "profit": round(d.profit, 2),
+                                        "time": datetime.datetime.fromtimestamp(d.time, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                                    })
+                            self.cached_deals = recent_deals[:5]
+                    data["deals_history"] = self.cached_deals
                 else:
                     data["error_message"] = "Terminal or Account info is null."
         except Exception as e:
@@ -818,7 +899,7 @@ class MT5Worker:
         for attempt in range(4):
             try:
                 with open(temp_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
+                    json.dump(data, f)
                 os.replace(temp_path, self.telemetry_file)
                 written = True
                 break
@@ -828,7 +909,7 @@ class MT5Worker:
         if not written:
             try:
                 with open(self.telemetry_file, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
+                    json.dump(data, f)
             except Exception as e:
                 self.logger.error(f"Failed to write telemetry file: {e}")
 
@@ -1555,6 +1636,9 @@ class MT5Worker:
         self.launch_mt5()
         self.connect_mt5()
 
+        fast_poll_interval = float(os.environ.get("FAST_POLL_INTERVAL", "0.08"))
+        telemetry_interval = float(os.environ.get("TELEMETRY_INTERVAL", "2.0"))
+
         last_telemetry_time = 0
 
         while not self.stop_event.is_set():
@@ -1567,8 +1651,8 @@ class MT5Worker:
                 self.check_fast_position_changes()
 
                 now = time.time()
-                # 3. Check connection and full telemetry every 1.0s
-                if now - last_telemetry_time >= 1.0:
+                # 3. Check connection and full telemetry every telemetry_interval (default 2.0s)
+                if now - last_telemetry_time >= telemetry_interval:
                     proc_running = self.is_terminal_running()
                     connected = False
 
@@ -1602,9 +1686,9 @@ class MT5Worker:
                 self.logger.error(f"Monitor loop error: {e}")
 
             # If commands were just executed, loop immediately with zero sleep to handle bursts.
-            # Otherwise, sleep 25ms to keep CPU load minimal while maintaining ultra-fast responsiveness.
+            # Otherwise, sleep fast_poll_interval (default 80ms) to keep CPU load low while maintaining ultra-fast responsiveness.
             if not did_work:
-                self.stop_event.wait(0.025)
+                self.stop_event.wait(fast_poll_interval)
 
         # Cleanup on stop
         self.logger.info("Stopping worker...")
