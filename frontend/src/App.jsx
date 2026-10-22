@@ -15,7 +15,8 @@ import {
   startAccount, stopAccount, restartAccount, deleteAccount,
   createAccount, registerNode, deleteNode, createDashboardWebSocket,
   fetchCopyGroups, createCopyGroup, updateCopyGroup, deleteCopyGroup,
-  addSlaveToGroup, removeSlaveFromGroup, fetchCopiedTrades, triggerCopierSync
+  addSlaveToGroup, removeSlaveFromGroup, fetchCopiedTrades, triggerCopierSync,
+  batchAccountAction
 } from './services/api';
 
 export default function App() {
@@ -118,6 +119,22 @@ export default function App() {
       loadData();
     } catch (err) {
       alert('Error deleting account: ' + err.message);
+    }
+  };
+
+  const handleBatchAction = async (logins, action, target_node_id = null) => {
+    if (!logins || !logins.length) return;
+    if (action === 'delete') {
+      if (!confirm(`Are you sure you want to delete ${logins.length} selected account(s)?`)) {
+        return;
+      }
+    }
+    try {
+      const res = await batchAccountAction(logins, action, target_node_id);
+      if (!res.success) throw new Error(res.message || 'Batch action failed');
+      loadData();
+    } catch (err) {
+      alert(`Batch ${action} error: ${err.message}`);
     }
   };
 
@@ -261,6 +278,8 @@ export default function App() {
               onDelete={handleDeleteAccount}
               onSelectAccount={(acc) => setSelectedAccount(acc)}
               onBulkImport={() => setShowBulkAddModal(true)}
+              onBatchAction={handleBatchAction}
+              nodes={nodes}
             />
           </>
         )}

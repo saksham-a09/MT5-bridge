@@ -1,10 +1,10 @@
 import csv
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional, List, Dict, Any
-from .schemas import AccountCreate, AccountUpdate, AccountBulkCreate
+from .schemas import AccountCreate, AccountUpdate, AccountBulkCreate, AccountBatchAction
 from .db import (
     get_all_accounts, get_account_by_login, create_account, create_accounts_bulk,
-    update_account, delete_account, set_account_status, add_log
+    update_account, delete_account, set_account_status, batch_account_action, add_log
 )
 
 router = APIRouter(prefix="/api/accounts", tags=["Accounts"])
@@ -144,6 +144,21 @@ def add_accounts_bulk(payload: AccountBulkCreate):
     return {
         "success": True,
         "message": f"Bulk import complete: {res['created']} added, {res['updated']} updated, {len(res['errors'])} failed.",
+        **res
+    }
+
+@router.post("/batch-action")
+def perform_batch_action(payload: AccountBatchAction):
+    if not payload.logins:
+        raise HTTPException(status_code=400, detail="No accounts specified.")
+    valid_actions = ["start", "stop", "restart", "delete", "assign_node"]
+    if payload.action not in valid_actions:
+        raise HTTPException(status_code=400, detail=f"Invalid action. Supported: {valid_actions}")
+
+    res = batch_account_action(payload.logins, payload.action, payload.target_node_id)
+    return {
+        "success": True,
+        "message": f"Successfully performed '{payload.action}' on {res['affected']} accounts.",
         **res
     }
 

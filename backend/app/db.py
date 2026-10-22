@@ -533,6 +533,41 @@ def set_account_status(login: int, status: str) -> Optional[Dict[str, Any]]:
         add_log(f"Account {login} status changed to {status}.", source="DB", conn=conn)
     return get_account_by_login(login)
 
+def batch_account_action(logins: List[int], action: str, target_node_id: Optional[str] = None) -> Dict[str, Any]:
+    if not logins:
+        return {"success": True, "action": action, "affected": 0, "logins": []}
+
+    now = get_iso_now()
+    clean_logins = [int(l) for l in logins]
+    placeholders = ",".join(["?"] * len(clean_logins))
+
+    with get_db() as conn:
+        if action == "start":
+            conn.execute(f"UPDATE accounts SET status = 'active', updated_at = ? WHERE login IN ({placeholders})", [now] + clean_logins)
+            add_log(f"Batch action: activated {len(clean_logins)} accounts.", source="DB", conn=conn)
+
+        elif action == "stop":
+            conn.execute(f"UPDATE accounts SET status = 'stopped', updated_at = ? WHERE login IN ({placeholders})", [now] + clean_logins)
+            conn.execute(f"UPDATE account_telemetry SET is_connected = 0 WHERE login IN ({placeholders})", clean_logins)
+            add_log(f"Batch action: stopped {len(clean_logins)} accounts.", source="DB", conn=conn)
+
+        elif action == "restart":
+            conn.execute(f"UPDATE accounts SET status = 'stopped', updated_at = ? WHERE login IN ({placeholders})", [now] + clean_logins)
+            conn.execute(f"UPDATE accounts SET status = 'active', updated_at = ? WHERE login IN ({placeholders})", [now] + clean_logins)
+            add_log(f"Batch action: restart signal sent for {len(clean_logins)} accounts.", source="DB", conn=conn)
+
+        elif action == "delete":
+            conn.execute(f"DELETE FROM accounts WHERE login IN ({placeholders})", clean_logins)
+            conn.execute(f"DELETE FROM account_telemetry WHERE login IN ({placeholders})", clean_logins)
+            add_log(f"Batch action: deleted {len(clean_logins)} accounts from database.", source="DB", conn=conn)
+
+        elif action == "assign_node":
+            node_val = str(target_node_id or "auto")
+            conn.execute(f"UPDATE accounts SET target_node_id = ?, updated_at = ? WHERE login IN ({placeholders})", [node_val, now] + clean_logins)
+            add_log(f"Batch action: assigned {len(clean_logins)} accounts to node '{node_val}'.", source="DB", conn=conn)
+
+    return {"success": True, "action": action, "affected": len(clean_logins), "logins": clean_logins}
+
 # --- Worker Nodes Helpers ---
 def get_all_nodes() -> List[Dict[str, Any]]:
     with get_db() as conn:

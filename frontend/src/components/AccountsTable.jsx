@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Play, Square, RotateCw, Trash2, ExternalLink, Search, 
-  Layers, Clock, Upload
+  Layers, Clock, Upload, CheckSquare, XSquare
 } from 'lucide-react';
 
 export default function AccountsTable({ 
@@ -17,8 +17,12 @@ export default function AccountsTable({
   onRestart, 
   onDelete, 
   onSelectAccount,
-  onBulkImport
+  onBulkImport,
+  onBatchAction,
+  nodes = []
 }) {
+  const [selectedLogins, setSelectedLogins] = useState([]);
+  const headerCheckboxRef = useRef(null);
   // Filter accounts
   const filtered = accounts.filter(acc => {
     // Node filter
@@ -42,6 +46,30 @@ export default function AccountsTable({
     }
     return true;
   });
+
+  const filteredLogins = filtered.map(a => a.login);
+  const allFilteredSelected = filteredLogins.length > 0 && filteredLogins.every(l => selectedLogins.includes(l));
+  const someFilteredSelected = filteredLogins.some(l => selectedLogins.includes(l));
+
+  useEffect(() => {
+    if (headerCheckboxRef.current) {
+      headerCheckboxRef.current.indeterminate = someFilteredSelected && !allFilteredSelected;
+    }
+  }, [someFilteredSelected, allFilteredSelected]);
+
+  const handleSelectAll = () => {
+    if (allFilteredSelected) {
+      setSelectedLogins(prev => prev.filter(l => !filteredLogins.includes(l)));
+    } else {
+      setSelectedLogins(prev => Array.from(new Set([...prev, ...filteredLogins])));
+    }
+  };
+
+  const handleToggleSelect = (login) => {
+    setSelectedLogins(prev => 
+      prev.includes(login) ? prev.filter(l => l !== login) : [...prev, login]
+    );
+  };
 
   return (
     <div className="glass-card" style={{ padding: '24px' }}>
@@ -154,6 +182,157 @@ export default function AccountsTable({
         </div>
       </div>
 
+      {/* Batch Actions Toolbar */}
+      {selectedLogins.length > 0 && (
+        <div style={{
+          marginBottom: '16px',
+          padding: '10px 16px',
+          borderRadius: 'var(--radius-md)',
+          background: 'linear-gradient(90deg, rgba(99, 102, 241, 0.16), rgba(6, 182, 212, 0.1))',
+          border: '1px solid rgba(99, 102, 241, 0.4)',
+          boxShadow: '0 4px 14px rgba(0, 0, 0, 0.35)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '12px'
+        }}>
+          {/* Left Selection Info */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span style={{
+              fontSize: '0.8rem',
+              fontWeight: '700',
+              color: '#ffffff',
+              background: 'rgba(99, 102, 241, 0.3)',
+              border: '1px solid rgba(99, 102, 241, 0.5)',
+              padding: '3px 10px',
+              borderRadius: 'var(--radius-full)'
+            }}>
+              {selectedLogins.length} {selectedLogins.length === 1 ? 'Account' : 'Accounts'} Selected
+            </span>
+            <button
+              type="button"
+              onClick={handleSelectAll}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--accent-cyan)',
+                cursor: 'pointer',
+                fontSize: '0.78rem',
+                textDecoration: 'underline'
+              }}
+            >
+              {allFilteredSelected ? 'Deselect visible' : `Select all visible (${filtered.length})`}
+            </button>
+            <span style={{ color: 'var(--border-subtle)' }}>•</span>
+            <button
+              type="button"
+              onClick={() => setSelectedLogins([])}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--text-muted)',
+                cursor: 'pointer',
+                fontSize: '0.78rem'
+              }}
+            >
+              Clear
+            </button>
+          </div>
+
+          {/* Action Buttons */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            {/* Batch Start */}
+            <button
+              id="btn-batch-start"
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => {
+                if (onBatchAction) onBatchAction(selectedLogins, 'start');
+              }}
+              style={{ borderColor: 'rgba(16, 185, 129, 0.4)', color: '#34d399', fontSize: '0.78rem', padding: '5px 12px' }}
+              title="Start / activate selected terminals"
+            >
+              <Play size={13} fill="currentColor" />
+              <span>Start ({selectedLogins.length})</span>
+            </button>
+
+            {/* Batch Stop */}
+            <button
+              id="btn-batch-stop"
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => {
+                if (onBatchAction) onBatchAction(selectedLogins, 'stop');
+              }}
+              style={{ borderColor: 'rgba(245, 158, 11, 0.4)', color: '#fbbf24', fontSize: '0.78rem', padding: '5px 12px' }}
+              title="Stop selected terminals"
+            >
+              <Square size={12} fill="currentColor" />
+              <span>Stop</span>
+            </button>
+
+            {/* Batch Restart */}
+            <button
+              id="btn-batch-restart"
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => {
+                if (onBatchAction) onBatchAction(selectedLogins, 'restart');
+              }}
+              style={{ borderColor: 'rgba(99, 102, 241, 0.4)', color: '#c7d2fe', fontSize: '0.78rem', padding: '5px 12px' }}
+              title="Restart selected terminals"
+            >
+              <RotateCw size={12} />
+              <span>Restart</span>
+            </button>
+
+            {/* Move to Node */}
+            {nodes && nodes.length > 0 && (
+              <select
+                id="select-batch-node"
+                onChange={(e) => {
+                  if (e.target.value && onBatchAction) {
+                    onBatchAction(selectedLogins, 'assign_node', e.target.value);
+                    e.target.value = '';
+                  }
+                }}
+                defaultValue=""
+                className="input-field"
+                style={{ height: '31px', fontSize: '0.76rem', width: 'auto', padding: '2px 8px', background: 'rgba(15, 23, 42, 0.85)' }}
+                title="Move selected accounts to hardware node"
+              >
+                <option value="" disabled>Move Node...</option>
+                <option value="auto">Auto-Balance</option>
+                {nodes.map(n => (
+                  <option key={n.node_id} value={n.node_id}>
+                    {n.name}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            {/* Batch Delete */}
+            <button
+              id="btn-batch-delete"
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => {
+                if (onBatchAction) {
+                  onBatchAction(selectedLogins, 'delete');
+                  setSelectedLogins([]);
+                }
+              }}
+              style={{ borderColor: 'rgba(244, 63, 94, 0.4)', color: '#fb7185', fontSize: '0.78rem', padding: '5px 12px' }}
+              title="Delete selected accounts from cluster"
+            >
+              <Trash2 size={12} />
+              <span>Delete</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Table */}
       <div style={{ overflowX: 'auto', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.85rem' }}>
@@ -167,6 +346,16 @@ export default function AccountsTable({
               textTransform: 'uppercase',
               letterSpacing: '0.05em'
             }}>
+              <th style={{ padding: '12px 14px', width: '38px', textAlign: 'center' }}>
+                <input
+                  ref={headerCheckboxRef}
+                  type="checkbox"
+                  checked={allFilteredSelected}
+                  onChange={handleSelectAll}
+                  style={{ cursor: 'pointer', width: '15px', height: '15px', accentColor: 'var(--accent-indigo)' }}
+                  title={allFilteredSelected ? 'Deselect all' : 'Select all'}
+                />
+              </th>
               <th style={{ padding: '12px 16px' }}>Account</th>
               <th style={{ padding: '12px 16px' }}>Broker & Server</th>
               <th style={{ padding: '12px 16px' }}>Assigned Hardware</th>
@@ -182,7 +371,7 @@ export default function AccountsTable({
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan="10" style={{ padding: '48px 20px', textAlign: 'center' }}>
+                <td colSpan="11" style={{ padding: '48px 20px', textAlign: 'center' }}>
                   <div style={{ maxWidth: '380px', margin: '0 auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
                     <div style={{
                       width: '44px',
@@ -225,11 +414,26 @@ export default function AccountsTable({
                     key={acc.login}
                     style={{
                       borderBottom: '1px solid var(--border-subtle)',
-                      transition: 'background 0.15s ease'
+                      transition: 'background 0.15s ease',
+                      background: selectedLogins.includes(acc.login) ? 'rgba(99, 102, 241, 0.08)' : 'transparent'
                     }}
-                    onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.025)'}
-                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                    onMouseEnter={(e) => {
+                      if (!selectedLogins.includes(acc.login)) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.025)';
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!selectedLogins.includes(acc.login)) e.currentTarget.style.background = 'transparent';
+                    }}
                   >
+                    {/* Select Checkbox */}
+                    <td style={{ padding: '14px 14px', textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={selectedLogins.includes(acc.login)}
+                        onChange={() => handleToggleSelect(acc.login)}
+                        style={{ cursor: 'pointer', width: '15px', height: '15px', accentColor: 'var(--accent-indigo)' }}
+                      />
+                    </td>
+
                     {/* Account */}
                     <td style={{ padding: '14px 16px' }}>
                       <div className="font-mono" style={{ fontWeight: '700', color: '#ffffff', fontSize: '0.92rem' }}>

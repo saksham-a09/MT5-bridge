@@ -15,6 +15,11 @@ class AccountBulkCreate(BaseModel):
     accounts: List[AccountCreate] = Field(..., description="List of MT5 accounts to create or update")
     overwrite_existing: Optional[bool] = Field(default=True, description="Whether to update fields if login already exists")
 
+class AccountBatchAction(BaseModel):
+    logins: List[int] = Field(..., description="List of MT5 account logins to apply the action to")
+    action: str = Field(..., description="'start', 'stop', 'restart', 'delete', or 'assign_node'")
+    target_node_id: Optional[str] = Field(default=None, description="Target node ID when action is 'assign_node'")
+
 class AccountUpdate(BaseModel):
     password: Optional[str] = None
     server: Optional[str] = None

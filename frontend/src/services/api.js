@@ -36,6 +36,15 @@ export async function createAccountsBulk(payload) {
   return res.json();
 }
 
+export async function batchAccountAction(logins, action, target_node_id = null) {
+  const res = await fetch(`${API_BASE}/accounts/batch-action`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ logins, action, target_node_id })
+  });
+  return res.json();
+}
+
 export async function updateAccount(login, payload) {
   const res = await fetch(`${API_BASE}/accounts/${login}`, {
     method: 'PUT',
