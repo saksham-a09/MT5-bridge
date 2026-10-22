@@ -27,6 +27,23 @@ export async function createAccount(payload) {
   return res.json();
 }
 
+export async function createAccountsBulk(payload) {
+  const res = await fetch(`${API_BASE}/accounts/bulk`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  return res.json();
+}
+
+export async function uploadAccountsCsv(formData) {
+  const res = await fetch(`${API_BASE}/accounts/upload-csv`, {
+    method: 'POST',
+    body: formData
+  });
+  return res.json();
+}
+
 export async function updateAccount(login, payload) {
   const res = await fetch(`${API_BASE}/accounts/${login}`, {
     method: 'PUT',

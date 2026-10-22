@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 
 export default function CopyTradingView({ 
+  summary = {},
   groups = [], 
   accounts = [], 
   copiedTrades = [], 
@@ -17,6 +18,15 @@ export default function CopyTradingView({
   onRemoveSlave,
   onTriggerSync 
 }) {
+  const masterClosedPnl = Number(summary?.master_daily_closed_pnl ?? summary?.accounts?.master_daily_closed_pnl ?? 0);
+  const slavesClosedPnl = Number(summary?.slaves_daily_closed_pnl ?? summary?.accounts?.slaves_daily_closed_pnl ?? 0);
+
+  const formatPnl = (val) => {
+    const num = Number(val) || 0;
+    const sign = num > 0 ? '+' : num < 0 ? '-' : '';
+    return `${sign}$${Math.abs(num).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedGroupForSlave, setSelectedGroupForSlave] = useState(null);
   const [activeTab, setActiveTab] = useState('groups'); // 'groups' | 'trades'
@@ -132,6 +142,66 @@ export default function CopyTradingView({
             <Plus size={16} />
             <span>New Copy Group</span>
           </button>
+        </div>
+      </div>
+
+      {/* Closed Day PnL Summary Display */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+        gap: '12px',
+        marginBottom: '16px'
+      }}>
+        <div className="glass-card" style={{ padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              Master Day Closed P/L
+            </div>
+            <div className="font-mono" style={{
+              fontSize: '1.4rem',
+              fontWeight: 700,
+              color: masterClosedPnl > 0 ? '#34d399' : masterClosedPnl < 0 ? '#fb7185' : '#ffffff',
+              marginTop: '2px'
+            }}>
+              {formatPnl(masterClosedPnl)}
+            </div>
+          </div>
+          <div style={{
+            padding: '4px 10px',
+            borderRadius: 'var(--radius-sm)',
+            background: masterClosedPnl >= 0 ? 'rgba(16, 185, 129, 0.12)' : 'rgba(244, 63, 94, 0.12)',
+            fontSize: '0.74rem',
+            color: masterClosedPnl >= 0 ? '#34d399' : '#fb7185',
+            fontWeight: 600
+          }}>
+            Master Realized
+          </div>
+        </div>
+
+        <div className="glass-card" style={{ padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              Slaves Day Closed Sum
+            </div>
+            <div className="font-mono" style={{
+              fontSize: '1.4rem',
+              fontWeight: 700,
+              color: slavesClosedPnl > 0 ? '#34d399' : slavesClosedPnl < 0 ? '#fb7185' : '#ffffff',
+              marginTop: '2px'
+            }}>
+              {formatPnl(slavesClosedPnl)}
+            </div>
+          </div>
+          <div style={{
+            padding: '4px 10px',
+            borderRadius: 'var(--radius-sm)',
+            background: slavesClosedPnl >= 0 ? 'rgba(16, 185, 129, 0.12)' : 'rgba(244, 63, 94, 0.12)',
+            fontSize: '0.74rem',
+            color: slavesClosedPnl >= 0 ? '#34d399' : '#fb7185',
+            fontWeight: 600
+          }}>
+            All Slaves Sum
+          </div>
         </div>
       </div>
 
@@ -262,8 +332,8 @@ export default function CopyTradingView({
                                   ({slv.slave_name || 'Slave'})
                                 </span>
                                 {slv.error_message && slv.error_message.toLowerCase().includes('autotrading') && (
-                                  <span style={{ fontSize: '0.7rem', color: '#f59e0b', background: 'rgba(245, 158, 11, 0.15)', padding: '1px 6px', borderRadius: '4px', fontWeight: 600 }}>
-                                    ⚠️ Click 'Algo Trading' (Ctrl+E)
+                                  <span style={{ fontSize: '0.7rem', color: '#f59e0b', background: 'rgba(245, 158, 11, 0.15)', padding: '1px 6px', borderRadius: '4px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                    <AlertCircle size={11} /> Click 'Algo Trading' (Ctrl+E)
                                   </span>
                                 )}
                               </div>
@@ -288,10 +358,22 @@ export default function CopyTradingView({
                   </div>
 
                   {/* Group Footer Metrics */}
-                  <div className="group-metrics-footer">
+                  <div className="group-metrics-footer" style={{ display: 'flex', flexWrap: 'wrap', gap: '16px' }}>
                     <div className="metric-col">
                       <span className="text-muted">Active Copied Positions:</span>
                       <span className="metric-val">{grp.open_copied_trades_count || 0}</span>
+                    </div>
+                    <div className="metric-col">
+                      <span className="text-muted">Master Day Closed:</span>
+                      <span className={`metric-val ${Number(grp.master_daily_closed_pnl || 0) > 0 ? 'text-green' : Number(grp.master_daily_closed_pnl || 0) < 0 ? 'text-red' : ''}`}>
+                        {formatPnl(grp.master_daily_closed_pnl)}
+                      </span>
+                    </div>
+                    <div className="metric-col">
+                      <span className="text-muted">Slaves Day Closed Sum:</span>
+                      <span className={`metric-val ${Number(grp.slaves_daily_closed_pnl || 0) > 0 ? 'text-green' : Number(grp.slaves_daily_closed_pnl || 0) < 0 ? 'text-red' : ''}`}>
+                        {formatPnl(grp.slaves_daily_closed_pnl)}
+                      </span>
                     </div>
                     <div className="metric-col">
                       <span className="text-muted">Total Slave Profit:</span>

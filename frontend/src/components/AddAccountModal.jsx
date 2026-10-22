@@ -1,16 +1,14 @@
 import React, { useState } from 'react';
 import { X, Plus, ShieldCheck, Server, AlertCircle } from 'lucide-react';
 
-export default function AddAccountModal({ nodes, onClose, onSave }) {
+export default function AddAccountModal({ nodes, onClose, onSave, onSwitchToBulk }) {
   const [formData, setFormData] = useState({
     login: '',
     password: '',
     server: '',
     name: '',
     target_node_id: 'auto',
-    expert: '',
-    symbol: 'XAUUSD',
-    timeframe: 'M1'
+    expert: ''
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -43,17 +41,70 @@ export default function AddAccountModal({ nodes, onClose, onSave }) {
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div style={{
-          padding: '20px 24px',
+          padding: '18px 24px',
           borderBottom: '1px solid var(--border-subtle)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between'
         }}>
-          <h3 style={{ fontSize: '1.15rem', fontWeight: '800', margin: 0 }}>
-            Add MetaTrader 5 Account
-          </h3>
+          <div>
+            <h3 style={{ fontSize: '1.15rem', fontWeight: '800', margin: 0 }}>
+              Add MetaTrader 5 Account
+            </h3>
+            <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', margin: '2px 0 0' }}>
+              Spin up and register a single terminal on the cluster
+            </p>
+          </div>
           <button onClick={onClose} className="btn btn-secondary btn-icon" style={{ borderRadius: '50%' }}>
             <X size={16} />
+          </button>
+        </div>
+
+        {/* Tab switch between Single and Bulk */}
+        <div style={{ padding: '14px 24px 0', display: 'flex', gap: '8px' }}>
+          <button
+            type="button"
+            style={{
+              padding: '6px 14px',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '0.78rem',
+              fontWeight: '700',
+              cursor: 'pointer',
+              border: '1px solid rgba(99, 102, 241, 0.4)',
+              background: 'linear-gradient(90deg, rgba(99, 102, 241, 0.22), rgba(6, 182, 212, 0.1))',
+              color: '#ffffff'
+            }}
+          >
+            Single Account
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (onSwitchToBulk) {
+                onSwitchToBulk();
+              }
+            }}
+            style={{
+              padding: '6px 14px',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '0.78rem',
+              fontWeight: '600',
+              cursor: 'pointer',
+              border: '1px solid var(--border-subtle)',
+              background: 'rgba(255, 255, 255, 0.04)',
+              color: 'var(--text-secondary)',
+              transition: 'all 0.15s ease'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = '#ffffff';
+              e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = 'var(--text-secondary)';
+              e.currentTarget.style.borderColor = 'var(--border-subtle)';
+            }}
+          >
+            Bulk Import (CSV / Text) →
           </button>
         </div>
 
@@ -157,48 +208,17 @@ export default function AddAccountModal({ nodes, onClose, onSave }) {
             </select>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', marginBottom: '24px' }}>
-            <div>
-              <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '6px' }}>
-                Expert EA (Optional)
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. UltraFastCopier"
-                className="input-field"
-                value={formData.expert}
-                onChange={(e) => setFormData({ ...formData, expert: e.target.value })}
-              />
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '6px' }}>
-                Default Symbol
-              </label>
-              <input
-                type="text"
-                placeholder="XAUUSD"
-                className="input-field font-mono"
-                value={formData.symbol}
-                onChange={(e) => setFormData({ ...formData, symbol: e.target.value })}
-              />
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '6px' }}>
-                Timeframe
-              </label>
-              <select
-                className="input-field font-mono"
-                value={formData.timeframe}
-                onChange={(e) => setFormData({ ...formData, timeframe: e.target.value })}
-              >
-                <option value="M1">M1</option>
-                <option value="M5">M5</option>
-                <option value="M15">M15</option>
-                <option value="H1">H1</option>
-                <option value="H4">H4</option>
-                <option value="D1">D1</option>
-              </select>
-            </div>
+          <div style={{ marginBottom: '24px' }}>
+            <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '6px' }}>
+              Expert EA / Strategy (Optional)
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. UltraFastCopier (leave blank if none)"
+              className="input-field"
+              value={formData.expert}
+              onChange={(e) => setFormData({ ...formData, expert: e.target.value })}
+            />
           </div>
 
           {/* Footer buttons */}

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from .db import (
     get_all_copy_groups, get_account_by_login, enqueue_node_command,
     record_copied_trade, update_copied_trade, get_active_copied_trade,
-    add_log
+    get_open_copied_trades, add_log
 )
 
 logger = logging.getLogger("TradeCopierEngine")
@@ -104,6 +104,41 @@ class TradeCopierEngine:
                         continue
                     slave_login = s["slave_login"]
                     self._dispatch_close(group_id, master_login, slave_login, old_ticket, old_pos)
+
+        # 1B. Reconcile any open trades in DB whose master position is closed
+        open_db_trades = get_open_copied_trades(group_id)
+        for tr in open_db_trades:
+            m_ticket = tr["master_ticket"]
+            s_login = tr["slave_login"]
+            if m_ticket not in curr_master_pos_map:
+                slave_acc = get_account_by_login(s_login)
+                s_positions = slave_acc.get("open_positions", []) if slave_acc else []
+                s_ticket = tr.get("slave_ticket")
+                slave_has_it = any(int(p.get("ticket", 0)) == s_ticket for p in s_positions) if s_ticket else False
+                if slave_has_it:
+                    self._dispatch_close(group_id, master_login, s_login, m_ticket, tr)
+                else:
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    s_profit = tr.get("slave_profit", 0.0)
+                    m_profit = tr.get("master_profit", 0.0)
+                    if slave_acc:
+                        for d in slave_acc.get("deals_history", []):
+                            if d.get("ticket") == s_ticket or str(m_ticket) in str(d.get("comment", "")):
+                                s_profit = float(d.get("profit", 0.0))
+                                break
+                    if master_acc:
+                        for d in master_acc.get("deals_history", []):
+                            if d.get("ticket") == m_ticket:
+                                m_profit = float(d.get("profit", 0.0))
+                                break
+                    update_copied_trade(
+                        master_ticket=m_ticket,
+                        slave_login=s_login,
+                        status="closed",
+                        closed_at=now_iso,
+                        slave_profit=s_profit,
+                        master_profit=m_profit
+                    )
 
         # 2. Process Master OPEN or MODIFIED positions -> Replicate to active slaves
         symbol_mappings = grp.get("symbol_mappings", {})
@@ -427,7 +462,8 @@ class TradeCopierEngine:
             "symbol": old_m_pos.get("symbol", ""),
             "order_type": old_m_pos.get("type", "BUY"),
             "volume": float(old_m_pos.get("volume", 0.01)),
-            "comment": f"Close C:{master_ticket}"
+            "comment": f"Close C:{master_ticket}",
+            "master_profit": float(old_m_pos.get("profit", 0.0))
         }
 
         self.action_timestamps[key] = now_ts
@@ -688,12 +724,19 @@ class TradeCopierEngine:
         elif action == "CLOSE":
             now_iso = datetime.now(timezone.utc).isoformat()
             slave_profit = float(data.get("profit", 0.0))
+            master_profit = float(payload.get("master_profit", 0.0))
+            close_update_fields = {
+                "status": "closed",
+                "closed_at": now_iso,
+                "slave_profit": slave_profit
+            }
+            if master_profit != 0.0:
+                close_update_fields["master_profit"] = master_profit
+
             update_copied_trade(
                 master_ticket=master_ticket,
                 slave_login=slave_login,
-                status="closed",
-                closed_at=now_iso,
-                slave_profit=slave_profit
+                **close_update_fields
             )
             # Remove mapping
             self.ticket_mappings.pop((master_ticket, slave_login), None)

@@ -338,7 +338,8 @@ class MT5Worker:
         self.last_telemetry_data = {}
         self.last_mem_trim = 0
         self.last_deals_time = 0
-        self.cached_deals = []
+        self.cached_deals = None
+        self.cached_daily_closed_pnl = 0.0
         self.urgent_telemetry_file = os.path.join(self.clone_dir, "urgent_telemetry.json")
 
         log_file = os.path.join(self.clone_dir, f"worker_{self.login_id}.log")
@@ -795,6 +796,7 @@ class MT5Worker:
             "open_positions": [],
             "pending_orders": [],
             "deals_history": [],
+            "daily_closed_pnl": 0.0,
             "error_message": "",
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")
         }
@@ -865,28 +867,49 @@ class MT5Worker:
                             })
                     data["pending_orders"] = orders_list
 
-                    # Recent history deals (last 5) - cached every 15s to conserve CPU
+                    # Recent history deals (last 5) & today's closed PnL - cached every 15s to conserve CPU
                     now_ts = time.time()
-                    if now_ts - self.last_deals_time >= 15.0 or not self.cached_deals:
+                    if now_ts - self.last_deals_time >= 15.0 or self.cached_deals is None:
                         self.last_deals_time = now_ts
                         now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+                        date_to = now + datetime.timedelta(days=1)
                         date_from = now - datetime.timedelta(days=7)
-                        deals = mt5.history_deals_get(date_from, now)
+                        deals = mt5.history_deals_get(date_from, date_to)
+                        recent_deals = []
+                        today_utc_date = datetime.datetime.now(datetime.timezone.utc).date()
+                        today_local_date = datetime.datetime.now().date()
+                        today_closed_sum = 0.0
                         if deals:
-                            recent_deals = []
+                            for d in deals:
+                                if d.entry in (1, 2, 3) and getattr(d, "symbol", ""):
+                                    deal_utc = datetime.datetime.fromtimestamp(d.time, datetime.timezone.utc).date()
+                                    deal_loc = datetime.datetime.fromtimestamp(d.time).date()
+                                    if deal_utc in (today_utc_date, today_local_date) or deal_loc in (today_utc_date, today_local_date):
+                                        p = float(getattr(d, "profit", 0.0) or 0.0)
+                                        sw = float(getattr(d, "swap", 0.0) or 0.0)
+                                        comm = float(getattr(d, "commission", 0.0) or 0.0)
+                                        fee = float(getattr(d, "fee", 0.0) or 0.0)
+                                        today_closed_sum += (p + sw + comm + fee)
+
                             for d in reversed(deals[-10:]):
                                 if d.entry in (1, 2, 3) and d.symbol:
+                                    p = float(getattr(d, "profit", 0.0) or 0.0)
+                                    sw = float(getattr(d, "swap", 0.0) or 0.0)
+                                    comm = float(getattr(d, "commission", 0.0) or 0.0)
+                                    fee = float(getattr(d, "fee", 0.0) or 0.0)
                                     recent_deals.append({
                                         "ticket": d.ticket,
                                         "symbol": d.symbol,
                                         "type": "BUY" if d.type == 0 else "SELL",
                                         "volume": d.volume,
                                         "price": d.price,
-                                        "profit": round(d.profit, 2),
+                                        "profit": round(p + sw + comm + fee, 2),
                                         "time": datetime.datetime.fromtimestamp(d.time, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
                                     })
-                            self.cached_deals = recent_deals[:5]
-                    data["deals_history"] = self.cached_deals
+                        self.cached_daily_closed_pnl = round(today_closed_sum, 2)
+                        self.cached_deals = recent_deals[:5]
+                    data["deals_history"] = self.cached_deals or []
+                    data["daily_closed_pnl"] = getattr(self, "cached_daily_closed_pnl", 0.0)
                 else:
                     data["error_message"] = "Terminal or Account info is null."
         except Exception as e:
@@ -956,6 +979,9 @@ class MT5Worker:
             return
 
         if curr_sig != self.last_pos_sig:
+            old_pos_count = len(self.last_pos_sig[0]) if self.last_pos_sig else 0
+            if len(pos_sig) < old_pos_count:
+                self.last_deals_time = 0
             self.last_pos_sig = curr_sig
             self.write_urgent_positions(positions or (), orders or ())
 
@@ -1017,11 +1043,13 @@ class MT5Worker:
             "open_positions": [],
             "pending_orders": [],
             "deals_history": [],
+            "daily_closed_pnl": getattr(self, "cached_daily_closed_pnl", 0.0),
             "error_message": ""
         }
         payload["login"] = self.login_id
         payload["open_positions"] = pos_list
         payload["pending_orders"] = orders_list
+        payload["daily_closed_pnl"] = getattr(self, "cached_daily_closed_pnl", 0.0)
         payload["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
         temp_u = f"{self.urgent_telemetry_file}.tmp"

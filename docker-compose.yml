@@ -14,8 +14,8 @@ services:
       - HEARTBEAT_TIMEOUT_SECONDS=30
     volumes:
       - hub-db-data:/app/data
-    expose:
-      - "8000"
+    ports:
+      - "8000:8000"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/nodes')"]
       interval: 10s
@@ -35,7 +35,6 @@ services:
     ports:
       - "80:80"        # Web Dashboard (HTTP)
       - "3000:80"      # Web Dashboard alternative
-      - "8000:8000"    # Worker Node Gateway (Proxied through Nginx)
     depends_on:
       backend:
         condition: service_healthy

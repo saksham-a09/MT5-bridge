@@ -76,7 +76,7 @@ export default function AccountDetailModal({ account, onClose, onRefresh }) {
           </div>
 
           <div style={{ background: 'rgba(255, 255, 255, 0.03)', padding: '12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
-            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Floating P/L</span>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Floating & Closed P/L</span>
             <div className="font-mono" style={{
               fontSize: '1.2rem',
               fontWeight: '700',
@@ -84,6 +84,9 @@ export default function AccountDetailModal({ account, onClose, onRefresh }) {
               marginTop: '4px'
             }}>
               {isProfitPos ? '+' : ''}${profit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+            <div style={{ fontSize: '0.7rem', color: Number(account.daily_closed_pnl || 0) >= 0 ? '#34d399' : '#fb7185', marginTop: '2px' }}>
+              Day Closed: {Number(account.daily_closed_pnl || 0) < 0 ? '-' : Number(account.daily_closed_pnl || 0) > 0 ? '+' : ''}${Math.abs(Number(account.daily_closed_pnl || 0)).toFixed(2)}
             </div>
           </div>
 

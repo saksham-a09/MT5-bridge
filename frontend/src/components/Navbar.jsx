@@ -1,5 +1,5 @@
 import React from 'react';
-import { Server, Activity, Plus, HardDrive, RefreshCw, Terminal, Layers, Zap } from 'lucide-react';
+import { Server, Activity, Plus, HardDrive, RefreshCw, Terminal, Layers, Zap, Upload } from 'lucide-react';
 
 export default function Navbar({ 
   wsConnected, 
@@ -8,6 +8,7 @@ export default function Navbar({
   currentView = 'dashboard',
   onSelectView,
   onAddAccount, 
+  onBulkImport,
   onAddNode, 
   onToggleLogs, 
   onRefresh 
@@ -143,6 +144,17 @@ export default function Navbar({
         >
           <Plus size={14} />
           <span>+ Account</span>
+        </button>
+
+        <button
+          id="btn-bulk-import-nav"
+          className="btn btn-secondary btn-sm"
+          onClick={onBulkImport}
+          title="Bulk Import MT5 Accounts via CSV or Text"
+          style={{ borderColor: 'rgba(6, 182, 212, 0.4)', color: 'var(--accent-cyan)', padding: '6px 12px' }}
+        >
+          <Upload size={13} />
+          <span>+ Bulk</span>
         </button>
 
         <button

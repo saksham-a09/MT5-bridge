@@ -4,13 +4,42 @@ import time
 import threading
 from datetime import datetime, timezone
 from contextlib import contextmanager
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from .config import settings
 
 db_lock = threading.RLock()
 
 def get_iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+def _extract_today_closed_pnl_from_deals(deals_raw: Any, today_dates: Set[str]) -> float:
+    if not deals_raw:
+        return 0.0
+    try:
+        deals = json.loads(deals_raw) if isinstance(deals_raw, str) else deals_raw
+        if not isinstance(deals, list):
+            return 0.0
+        total = 0.0
+        for d in deals:
+            t_val = d.get("time", "")
+            match = False
+            if isinstance(t_val, str):
+                match = any(t_val.startswith(td) for td in today_dates)
+            elif isinstance(t_val, (int, float)):
+                try:
+                    d_dt = datetime.fromtimestamp(t_val, timezone.utc).strftime("%Y-%m-%d")
+                    match = d_dt in today_dates
+                except Exception:
+                    pass
+            if match:
+                profit = float(d.get("profit", 0.0) or 0.0)
+                swap = float(d.get("swap", 0.0) or 0.0)
+                comm = float(d.get("commission", 0.0) or 0.0)
+                fee = float(d.get("fee", 0.0) or 0.0)
+                total += (profit + swap + comm + fee)
+        return round(total, 2)
+    except Exception:
+        return 0.0
 
 @contextmanager
 def get_db():
@@ -74,6 +103,7 @@ def init_db():
             balance REAL DEFAULT 0.0,
             equity REAL DEFAULT 0.0,
             profit REAL DEFAULT 0.0,
+            daily_closed_pnl REAL DEFAULT 0.0,
             margin REAL DEFAULT 0.0,
             margin_free REAL DEFAULT 0.0,
             margin_level REAL DEFAULT 0.0,
@@ -169,9 +199,63 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_node_commands_pending ON copy_node_commands(node_id, status);
         """)
 
-        # Migration: ensure pending_orders column exists
+        # Migration: ensure pending_orders and daily_closed_pnl columns exist
         try:
-            conn.execute("ALTER TABLE account_telemetry ADD COLUMN pending_orders TEXT DEFAULT '[]'")
+            cursor = conn.execute("PRAGMA table_info(account_telemetry)")
+            existing_cols = {row[1] for row in cursor.fetchall()}
+            if "pending_orders" not in existing_cols:
+                conn.execute("ALTER TABLE account_telemetry ADD COLUMN pending_orders TEXT DEFAULT '[]'")
+            if "daily_closed_pnl" not in existing_cols:
+                conn.execute("ALTER TABLE account_telemetry ADD COLUMN daily_closed_pnl REAL DEFAULT 0.0")
+        except Exception:
+            pass
+
+        # Reconcile stale open copied trades if positions are empty in telemetry
+        try:
+            tel_rows = conn.execute("SELECT login, open_positions, deals_history FROM account_telemetry").fetchall()
+            open_pos_by_login = {}
+            deals_by_login = {}
+            for tr in tel_rows:
+                try:
+                    open_pos_by_login[tr["login"]] = {int(p.get("ticket", 0)) for p in json.loads(tr["open_positions"] or "[]")}
+                except Exception:
+                    open_pos_by_login[tr["login"]] = set()
+                try:
+                    deals_by_login[tr["login"]] = json.loads(tr["deals_history"] or "[]")
+                except Exception:
+                    deals_by_login[tr["login"]] = []
+
+            if open_pos_by_login:
+                open_trades = conn.execute("SELECT id, master_login, slave_login, master_ticket, slave_ticket, opened_at FROM copied_trades WHERE status = 'open'").fetchall()
+                now_iso = get_iso_now()
+                for ot in open_trades:
+                    m_login = ot["master_login"]
+                    s_login = ot["slave_login"]
+                    m_ticket = ot["master_ticket"]
+                    s_ticket = ot["slave_ticket"]
+                    if m_login in open_pos_by_login and m_ticket not in open_pos_by_login[m_login]:
+                        s_open_tickets = open_pos_by_login.get(s_login, set())
+                        if s_ticket not in s_open_tickets:
+                            m_profit = 0.0
+                            s_profit = 0.0
+                            closed_at = now_iso
+                            for d in deals_by_login.get(m_login, []):
+                                if d.get("ticket") == m_ticket:
+                                    m_profit = float(d.get("profit", 0.0))
+                                    if d.get("time"):
+                                        closed_at = d["time"]
+                                    break
+                            for d in deals_by_login.get(s_login, []):
+                                if d.get("ticket") == s_ticket or str(m_ticket) in str(d.get("comment", "")):
+                                    s_profit = float(d.get("profit", 0.0))
+                                    if d.get("time") and closed_at == now_iso:
+                                        closed_at = d["time"]
+                                    break
+                            conn.execute("""
+                                UPDATE copied_trades
+                                SET status = 'closed', closed_at = ?, master_profit = ?, slave_profit = ?
+                                WHERE id = ?
+                            """, (closed_at, m_profit, s_profit, ot["id"]))
         except Exception:
             pass
 
@@ -214,8 +298,8 @@ def get_all_accounts(status_filter: Optional[str] = None, search: Optional[str] 
         query = """
         SELECT a.*, 
                t.is_connected, t.broker_name, t.currency, t.leverage, 
-               t.balance, t.equity, t.profit, t.margin, t.margin_free, t.margin_level,
-               t.ping, t.open_positions, t.pending_orders, t.error_message, t.last_sync,
+               t.balance, t.equity, t.profit, t.daily_closed_pnl, t.margin, t.margin_free, t.margin_level,
+               t.ping, t.open_positions, t.pending_orders, t.deals_history, t.error_message, t.last_sync,
                w.name as node_name, w.status as node_status
         FROM accounts a
         LEFT JOIN account_telemetry t ON a.login = t.login
@@ -235,6 +319,7 @@ def get_all_accounts(status_filter: Optional[str] = None, search: Optional[str] 
         cursor = conn.execute(query, params)
         rows = cursor.fetchall()
         accounts = []
+        today_dates = {datetime.now(timezone.utc).strftime("%Y-%m-%d"), datetime.now().strftime("%Y-%m-%d")}
         for r in rows:
             acc = dict(r)
             try:
@@ -245,8 +330,14 @@ def get_all_accounts(status_filter: Optional[str] = None, search: Optional[str] 
                 acc["pending_orders"] = json.loads(acc.get("pending_orders") or "[]")
             except Exception:
                 acc["pending_orders"] = []
+            try:
+                acc["deals_history"] = json.loads(acc.get("deals_history") or "[]")
+            except Exception:
+                acc["deals_history"] = []
             acc["open_positions_count"] = len(acc["open_positions"])
             acc["pending_orders_count"] = len(acc["pending_orders"])
+            if (not acc.get("daily_closed_pnl") or float(acc.get("daily_closed_pnl") or 0.0) == 0.0) and acc.get("deals_history"):
+                acc["daily_closed_pnl"] = _extract_today_closed_pnl_from_deals(acc["deals_history"], today_dates)
             accounts.append(acc)
         return accounts
 
@@ -255,7 +346,7 @@ def get_account_by_login(login: int, conn: Optional[sqlite3.Connection] = None) 
         cursor = c.execute("""
         SELECT a.*, 
                t.is_connected, t.broker_name, t.currency, t.leverage, 
-               t.balance, t.equity, t.profit, t.margin, t.margin_free, t.margin_level,
+               t.balance, t.equity, t.profit, t.daily_closed_pnl, t.margin, t.margin_free, t.margin_level,
                t.ping, t.open_positions, t.pending_orders, t.deals_history, t.error_message, t.last_sync,
                w.name as node_name, w.status as node_status
         FROM accounts a
@@ -281,6 +372,9 @@ def get_account_by_login(login: int, conn: Optional[sqlite3.Connection] = None) 
             acc["deals_history"] = []
         acc["open_positions_count"] = len(acc["open_positions"])
         acc["pending_orders_count"] = len(acc["pending_orders"])
+        if (not acc.get("daily_closed_pnl") or float(acc.get("daily_closed_pnl") or 0.0) == 0.0) and acc.get("deals_history"):
+            today_dates = {datetime.now(timezone.utc).strftime("%Y-%m-%d"), datetime.now().strftime("%Y-%m-%d")}
+            acc["daily_closed_pnl"] = _extract_today_closed_pnl_from_deals(acc["deals_history"], today_dates)
         return acc
 
     if conn:
@@ -316,6 +410,102 @@ def create_account(login: int, password: str, server: str, name: str = "", targe
         add_log(f"Account {login} ({server}) added/updated in database.", source="DB", conn=conn)
 
     return get_account_by_login(login)
+
+def create_accounts_bulk(accounts_data: List[Dict[str, Any]], overwrite_existing: bool = True) -> Dict[str, Any]:
+    now = get_iso_now()
+    results: Dict[str, Any] = {
+        "total": len(accounts_data),
+        "created": 0,
+        "updated": 0,
+        "skipped": 0,
+        "errors": [],
+        "accounts": []
+    }
+    
+    with get_db() as conn:
+        for idx, item in enumerate(accounts_data):
+            try:
+                login_raw = item.get("login")
+                if login_raw is None or str(login_raw).strip() == "":
+                    results["errors"].append({"index": idx, "login": None, "error": "Missing login ID"})
+                    continue
+                try:
+                    login = int(login_raw)
+                except (ValueError, TypeError):
+                    results["errors"].append({"index": idx, "login": login_raw, "error": "Login ID must be a numeric integer"})
+                    continue
+
+                password = str(item.get("password") or "").strip()
+                server = str(item.get("server") or "").strip()
+                name = str(item.get("name") or "").strip() or f"Account {login}"
+                target_node_id = str(item.get("target_node_id") or "auto").strip() or "auto"
+                expert = str(item.get("expert") or "").strip()
+                symbol = str(item.get("symbol") or "XAUUSD").strip() or "XAUUSD"
+                timeframe = str(item.get("timeframe") or "M1").strip() or "M1"
+
+                if not password:
+                    results["errors"].append({"index": idx, "login": login, "error": "Password cannot be empty"})
+                    continue
+                if not server:
+                    results["errors"].append({"index": idx, "login": login, "error": "Broker server name cannot be empty"})
+                    continue
+
+                existing = conn.execute("SELECT login FROM accounts WHERE login = ?", (login,)).fetchone()
+                if existing:
+                    if not overwrite_existing:
+                        results["skipped"] += 1
+                        continue
+
+                    conn.execute("""
+                        UPDATE accounts SET
+                            password = ?,
+                            server = ?,
+                            name = ?,
+                            status = 'active',
+                            target_node_id = ?,
+                            expert = ?,
+                            symbol = ?,
+                            timeframe = ?,
+                            updated_at = ?
+                        WHERE login = ?
+                    """, (password, server, name, target_node_id, expert, symbol, timeframe, now, login))
+                    results["updated"] += 1
+                else:
+                    conn.execute("""
+                        INSERT INTO accounts (login, password, server, name, status, assigned_node_id, target_node_id,
+                                             expert, symbol, timeframe, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, 'active', NULL, ?, ?, ?, ?, ?, ?)
+                    """, (login, password, server, name, target_node_id, expert, symbol, timeframe, now, now))
+
+                    conn.execute("""
+                        INSERT OR IGNORE INTO account_telemetry (login, is_connected, server, last_sync)
+                        VALUES (?, 0, ?, ?)
+                    """, (login, server, now))
+                    results["created"] += 1
+
+            except Exception as e:
+                results["errors"].append({"index": idx, "login": item.get("login"), "error": str(e)})
+
+        total_processed = results["created"] + results["updated"]
+        if total_processed > 0:
+            add_log(
+                f"Bulk account import processed {total_processed} accounts: {results['created']} added, {results['updated']} updated, {results['skipped']} skipped, {len(results['errors'])} errors.",
+                source="DB",
+                conn=conn
+            )
+
+    # Fetch accounts that were successfully processed
+    for item in accounts_data:
+        try:
+            l = int(item.get("login", 0))
+            if l:
+                acc = get_account_by_login(l)
+                if acc and acc not in results["accounts"]:
+                    results["accounts"].append(acc)
+        except Exception:
+            pass
+
+    return results
 
 def update_account(login: int, **fields) -> Optional[Dict[str, Any]]:
     if not fields:
@@ -412,9 +602,9 @@ def update_account_telemetry(login: int, data: Dict[str, Any]):
         conn.execute("""
         INSERT INTO account_telemetry (
             login, is_connected, broker_name, server, currency, leverage,
-            balance, equity, profit, margin, margin_free, margin_level,
+            balance, equity, profit, daily_closed_pnl, margin, margin_free, margin_level,
             ping, open_positions, pending_orders, deals_history, error_message, last_sync
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(login) DO UPDATE SET
             is_connected = excluded.is_connected,
             broker_name = excluded.broker_name,
@@ -424,6 +614,7 @@ def update_account_telemetry(login: int, data: Dict[str, Any]):
             balance = excluded.balance,
             equity = excluded.equity,
             profit = excluded.profit,
+            daily_closed_pnl = excluded.daily_closed_pnl,
             margin = excluded.margin,
             margin_free = excluded.margin_free,
             margin_level = excluded.margin_level,
@@ -443,6 +634,7 @@ def update_account_telemetry(login: int, data: Dict[str, Any]):
             float(data.get("balance", 0.0)),
             float(data.get("equity", 0.0)),
             float(data.get("profit", 0.0)),
+            float(data.get("daily_closed_pnl", 0.0)),
             float(data.get("margin", 0.0)),
             float(data.get("margin_free", 0.0)),
             float(data.get("margin_level", 0.0)),
@@ -504,14 +696,94 @@ def get_dashboard_summary() -> Dict[str, Any]:
         """)
         node_stats = dict(node_cursor.fetchone())
 
+        # Closed PnL for the day: Master total and Slaves sum
+        now_dt = datetime.now(timezone.utc)
+        today_utc = now_dt.strftime("%Y-%m-%d")
+        today_local = datetime.now().strftime("%Y-%m-%d")
+        today_dates = {today_utc, today_local}
+
+        # 1. Master Daily Closed PnL
+        master_cur = conn.execute("""
+            SELECT COALESCE(SUM(t.daily_closed_pnl), 0.0) as telemetry_pnl
+            FROM account_telemetry t
+            WHERE t.login IN (SELECT DISTINCT master_login FROM copy_groups)
+        """)
+        m_row = master_cur.fetchone()
+        master_telemetry_pnl = round(float(m_row["telemetry_pnl"] if m_row else 0.0), 2)
+
+        m_deals_pnl = 0.0
+        m_deals_cur = conn.execute("""
+            SELECT t.deals_history FROM account_telemetry t
+            WHERE t.login IN (SELECT DISTINCT master_login FROM copy_groups)
+        """)
+        for row in m_deals_cur.fetchall():
+            m_deals_pnl += _extract_today_closed_pnl_from_deals(row["deals_history"], today_dates)
+        m_deals_pnl = round(m_deals_pnl, 2)
+
+        m_trades_cur = conn.execute("""
+            SELECT COALESCE(SUM(master_profit), 0.0) as trades_pnl
+            FROM copied_trades
+            WHERE status = 'closed' AND (
+                closed_at LIKE ? OR closed_at LIKE ?
+                OR date(closed_at) = date('now')
+                OR date(closed_at, 'localtime') = date('now', 'localtime')
+            )
+        """, (f"{today_utc}%", f"{today_local}%"))
+        m_t_row = m_trades_cur.fetchone()
+        m_trades_pnl = round(float(m_t_row["trades_pnl"] if m_t_row else 0.0), 2)
+
+        master_daily_closed_pnl = master_telemetry_pnl if master_telemetry_pnl != 0.0 else (m_deals_pnl if m_deals_pnl != 0.0 else m_trades_pnl)
+
+        # 2. Slaves Daily Closed PnL (Total Sum across all slaves)
+        slave_cur = conn.execute("""
+            SELECT COALESCE(SUM(t.daily_closed_pnl), 0.0) as telemetry_pnl
+            FROM account_telemetry t
+            WHERE t.login IN (SELECT DISTINCT slave_login FROM copy_group_slaves)
+        """)
+        s_row = slave_cur.fetchone()
+        slave_telemetry_pnl = round(float(s_row["telemetry_pnl"] if s_row else 0.0), 2)
+
+        s_deals_pnl = 0.0
+        s_deals_cur = conn.execute("""
+            SELECT t.deals_history FROM account_telemetry t
+            WHERE t.login IN (SELECT DISTINCT slave_login FROM copy_group_slaves)
+        """)
+        for row in s_deals_cur.fetchall():
+            s_deals_pnl += _extract_today_closed_pnl_from_deals(row["deals_history"], today_dates)
+        s_deals_pnl = round(s_deals_pnl, 2)
+
+        s_trades_cur = conn.execute("""
+            SELECT COALESCE(SUM(slave_profit), 0.0) as trades_pnl
+            FROM copied_trades
+            WHERE status = 'closed' AND (
+                closed_at LIKE ? OR closed_at LIKE ?
+                OR date(closed_at) = date('now')
+                OR date(closed_at, 'localtime') = date('now', 'localtime')
+            )
+        """, (f"{today_utc}%", f"{today_local}%"))
+        s_t_row = s_trades_cur.fetchone()
+        s_trades_pnl = round(float(s_t_row["trades_pnl"] if s_t_row else 0.0), 2)
+
+        slaves_daily_closed_pnl = slave_telemetry_pnl if slave_telemetry_pnl != 0.0 else (s_deals_pnl if s_deals_pnl != 0.0 else s_trades_pnl)
+
+        acc_stats["master_daily_closed_pnl"] = master_daily_closed_pnl
+        acc_stats["slaves_daily_closed_pnl"] = slaves_daily_closed_pnl
+
         return {
             "accounts": acc_stats,
             "nodes": node_stats,
+            "master_daily_closed_pnl": master_daily_closed_pnl,
+            "slaves_daily_closed_pnl": slaves_daily_closed_pnl,
             "timestamp": get_iso_now()
         }
 
 # --- Copy Trading Helpers ---
 def get_all_copy_groups() -> List[Dict[str, Any]]:
+    now_dt = datetime.now(timezone.utc)
+    today_utc = now_dt.strftime("%Y-%m-%d")
+    today_local = datetime.now().strftime("%Y-%m-%d")
+    today_dates = {today_utc, today_local}
+
     with get_db() as conn:
         cursor = conn.execute("""
         SELECT g.*, 
@@ -530,19 +802,82 @@ def get_all_copy_groups() -> List[Dict[str, Any]]:
                 grp["symbol_mappings"] = json.loads(grp.get("symbol_mappings") or "{}")
             except Exception:
                 grp["symbol_mappings"] = {}
+
+            # Group specific closed PnL for today
+            grp_m = conn.execute("""
+                SELECT COALESCE(t.daily_closed_pnl, 0.0) as pnl, t.deals_history
+                FROM account_telemetry t WHERE t.login = ?
+            """, (grp["master_login"],)).fetchone()
+            grp_m_pnl = float(grp_m["pnl"] if grp_m else 0.0)
+            if grp_m_pnl == 0.0 and grp_m:
+                grp_m_pnl = _extract_today_closed_pnl_from_deals(grp_m["deals_history"], today_dates)
+            if grp_m_pnl == 0.0:
+                grp_m_tr = conn.execute("""
+                    SELECT COALESCE(SUM(master_profit), 0.0) as pnl
+                    FROM copied_trades
+                    WHERE group_id = ? AND status = 'closed' AND (
+                        closed_at LIKE ? OR closed_at LIKE ?
+                        OR date(closed_at) = date('now')
+                        OR date(closed_at, 'localtime') = date('now', 'localtime')
+                    )
+                """, (grp["id"], f"{today_utc}%", f"{today_local}%")).fetchone()
+                grp_m_pnl = float(grp_m_tr["pnl"] if grp_m_tr else 0.0)
+            grp["master_daily_closed_pnl"] = round(grp_m_pnl, 2)
+
+            grp_s = conn.execute("""
+                SELECT COALESCE(SUM(t.daily_closed_pnl), 0.0) as pnl
+                FROM account_telemetry t
+                WHERE t.login IN (SELECT slave_login FROM copy_group_slaves WHERE group_id = ?)
+            """, (grp["id"],)).fetchone()
+            grp_s_telemetry = round(float(grp_s["pnl"] if grp_s else 0.0), 2)
+
+            grp_s_deals_pnl = 0.0
+            if grp_s_telemetry == 0.0:
+                s_deals_rows = conn.execute("""
+                    SELECT t.deals_history FROM account_telemetry t
+                    WHERE t.login IN (SELECT slave_login FROM copy_group_slaves WHERE group_id = ?)
+                """, (grp["id"],)).fetchall()
+                for sdr in s_deals_rows:
+                    grp_s_deals_pnl += _extract_today_closed_pnl_from_deals(sdr["deals_history"], today_dates)
+                grp_s_deals_pnl = round(grp_s_deals_pnl, 2)
+
+            grp_s_trades = conn.execute("""
+                SELECT COALESCE(SUM(slave_profit), 0.0) as pnl
+                FROM copied_trades
+                WHERE group_id = ? AND status = 'closed' AND (
+                    closed_at LIKE ? OR closed_at LIKE ?
+                    OR date(closed_at) = date('now')
+                    OR date(closed_at, 'localtime') = date('now', 'localtime')
+                )
+            """, (grp["id"], f"{today_utc}%", f"{today_local}%")).fetchone()
+            grp_s_trades_pnl = round(float(grp_s_trades["pnl"] if grp_s_trades else 0.0), 2)
+
+            grp["slaves_daily_closed_pnl"] = grp_s_telemetry if grp_s_telemetry != 0.0 else (grp_s_deals_pnl if grp_s_deals_pnl != 0.0 else grp_s_trades_pnl)
+
             slaves_cursor = conn.execute("""
             SELECT s.*, a.name as slave_name, a.server as slave_server, a.status as account_status,
-                   t.is_connected, t.balance, t.equity
+                   t.is_connected, t.balance, t.equity, t.daily_closed_pnl, t.deals_history
             FROM copy_group_slaves s
             JOIN accounts a ON s.slave_login = a.login
             LEFT JOIN account_telemetry t ON s.slave_login = t.login
             WHERE s.group_id = ?
             """, (grp["id"],))
-            grp["slaves"] = [dict(s) for s in slaves_cursor.fetchall()]
+            slaves_list = []
+            for s in slaves_cursor.fetchall():
+                sd = dict(s)
+                if (not sd.get("daily_closed_pnl") or float(sd.get("daily_closed_pnl") or 0.0) == 0.0) and sd.get("deals_history"):
+                    sd["daily_closed_pnl"] = _extract_today_closed_pnl_from_deals(sd["deals_history"], today_dates)
+                slaves_list.append(sd)
+            grp["slaves"] = slaves_list
             groups.append(grp)
         return groups
 
 def get_copy_group_by_id(group_id: int) -> Optional[Dict[str, Any]]:
+    now_dt = datetime.now(timezone.utc)
+    today_utc = now_dt.strftime("%Y-%m-%d")
+    today_local = datetime.now().strftime("%Y-%m-%d")
+    today_dates = {today_utc, today_local}
+
     with get_db() as conn:
         cursor = conn.execute("""
         SELECT g.*, 
@@ -562,15 +897,72 @@ def get_copy_group_by_id(group_id: int) -> Optional[Dict[str, Any]]:
             grp["symbol_mappings"] = json.loads(grp.get("symbol_mappings") or "{}")
         except Exception:
             grp["symbol_mappings"] = {}
+
+        grp_m = conn.execute("""
+            SELECT COALESCE(t.daily_closed_pnl, 0.0) as pnl, t.deals_history
+            FROM account_telemetry t WHERE t.login = ?
+        """, (grp["master_login"],)).fetchone()
+        grp_m_pnl = float(grp_m["pnl"] if grp_m else 0.0)
+        if grp_m_pnl == 0.0 and grp_m:
+            grp_m_pnl = _extract_today_closed_pnl_from_deals(grp_m["deals_history"], today_dates)
+        if grp_m_pnl == 0.0:
+            grp_m_tr = conn.execute("""
+                SELECT COALESCE(SUM(master_profit), 0.0) as pnl
+                FROM copied_trades
+                WHERE group_id = ? AND status = 'closed' AND (
+                    closed_at LIKE ? OR closed_at LIKE ?
+                    OR date(closed_at) = date('now')
+                    OR date(closed_at, 'localtime') = date('now', 'localtime')
+                )
+            """, (grp["id"], f"{today_utc}%", f"{today_local}%")).fetchone()
+            grp_m_pnl = float(grp_m_tr["pnl"] if grp_m_tr else 0.0)
+        grp["master_daily_closed_pnl"] = round(grp_m_pnl, 2)
+
+        grp_s = conn.execute("""
+            SELECT COALESCE(SUM(t.daily_closed_pnl), 0.0) as pnl
+            FROM account_telemetry t
+            WHERE t.login IN (SELECT slave_login FROM copy_group_slaves WHERE group_id = ?)
+        """, (grp["id"],)).fetchone()
+        grp_s_telemetry = round(float(grp_s["pnl"] if grp_s else 0.0), 2)
+
+        grp_s_deals_pnl = 0.0
+        if grp_s_telemetry == 0.0:
+            s_deals_rows = conn.execute("""
+                SELECT t.deals_history FROM account_telemetry t
+                WHERE t.login IN (SELECT slave_login FROM copy_group_slaves WHERE group_id = ?)
+            """, (grp["id"],)).fetchall()
+            for sdr in s_deals_rows:
+                grp_s_deals_pnl += _extract_today_closed_pnl_from_deals(sdr["deals_history"], today_dates)
+            grp_s_deals_pnl = round(grp_s_deals_pnl, 2)
+
+        grp_s_trades = conn.execute("""
+            SELECT COALESCE(SUM(slave_profit), 0.0) as pnl
+            FROM copied_trades
+            WHERE group_id = ? AND status = 'closed' AND (
+                closed_at LIKE ? OR closed_at LIKE ?
+                OR date(closed_at) = date('now')
+                OR date(closed_at, 'localtime') = date('now', 'localtime')
+            )
+        """, (grp["id"], f"{today_utc}%", f"{today_local}%")).fetchone()
+        grp_s_trades_pnl = round(float(grp_s_trades["pnl"] if grp_s_trades else 0.0), 2)
+
+        grp["slaves_daily_closed_pnl"] = grp_s_telemetry if grp_s_telemetry != 0.0 else (grp_s_deals_pnl if grp_s_deals_pnl != 0.0 else grp_s_trades_pnl)
+
         slaves_cursor = conn.execute("""
         SELECT s.*, a.name as slave_name, a.server as slave_server, a.status as account_status,
-               t.is_connected, t.balance, t.equity
-            FROM copy_group_slaves s
-            JOIN accounts a ON s.slave_login = a.login
-            LEFT JOIN account_telemetry t ON s.slave_login = t.login
+               t.is_connected, t.balance, t.equity, t.daily_closed_pnl, t.deals_history
+        FROM copy_group_slaves s
+        JOIN accounts a ON s.slave_login = a.login
+        LEFT JOIN account_telemetry t ON s.slave_login = t.login
         WHERE s.group_id = ?
         """, (group_id,))
-        grp["slaves"] = [dict(s) for s in slaves_cursor.fetchall()]
+        slaves_list = []
+        for s in slaves_cursor.fetchall():
+            sd = dict(s)
+            if (not sd.get("daily_closed_pnl") or float(sd.get("daily_closed_pnl") or 0.0) == 0.0) and sd.get("deals_history"):
+                sd["daily_closed_pnl"] = _extract_today_closed_pnl_from_deals(sd["deals_history"], today_dates)
+            slaves_list.append(sd)
+        grp["slaves"] = slaves_list
         return grp
 
 def create_copy_group(name: str, master_login: int, risk_type: str = "multiplier",
@@ -700,6 +1092,16 @@ def get_active_copied_trade(master_ticket: int, slave_login: int) -> Optional[Di
         """, (master_ticket, slave_login))
         row = cursor.fetchone()
         return dict(row) if row else None
+
+def get_open_copied_trades(group_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    with get_db() as conn:
+        query = "SELECT * FROM copied_trades WHERE status IN ('open', 'pending')"
+        params = []
+        if group_id:
+            query += " AND group_id = ?"
+            params.append(group_id)
+        cursor = conn.execute(query, params)
+        return [dict(r) for r in cursor.fetchall()]
 
 # Node command queue helpers
 def enqueue_node_command(node_id: str, login: int, action: str, payload: Dict[str, Any]) -> str:

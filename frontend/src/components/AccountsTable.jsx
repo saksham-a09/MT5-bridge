@@ -1,7 +1,7 @@
 import React from 'react';
 import { 
   Play, Square, RotateCw, Trash2, ExternalLink, Search, 
-  Layers, Clock 
+  Layers, Clock, Upload
 } from 'lucide-react';
 
 export default function AccountsTable({ 
@@ -16,7 +16,8 @@ export default function AccountsTable({
   onStop, 
   onRestart, 
   onDelete, 
-  onSelectAccount 
+  onSelectAccount,
+  onBulkImport
 }) {
   // Filter accounts
   const filtered = accounts.filter(acc => {
@@ -127,6 +128,29 @@ export default function AccountsTable({
               style={{ paddingLeft: '32px', fontSize: '0.8rem', height: '34px' }}
             />
           </div>
+
+          {/* Bulk Import Action Button */}
+          {onBulkImport && (
+            <button
+              id="btn-table-bulk-import"
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={onBulkImport}
+              title="Bulk import multiple accounts from CSV or text"
+              style={{
+                borderColor: 'rgba(6, 182, 212, 0.4)',
+                color: 'var(--accent-cyan)',
+                height: '34px',
+                padding: '0 12px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}
+            >
+              <Upload size={13} />
+              <span>Bulk Import</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -158,8 +182,35 @@ export default function AccountsTable({
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan="10" style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>
-                  No MT5 accounts match the selected criteria.
+                <td colSpan="10" style={{ padding: '48px 20px', textAlign: 'center' }}>
+                  <div style={{ maxWidth: '380px', margin: '0 auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
+                    <div style={{
+                      width: '44px',
+                      height: '44px',
+                      borderRadius: '50%',
+                      background: 'rgba(255, 255, 255, 0.04)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: 'var(--text-muted)'
+                    }}>
+                      <Layers size={22} />
+                    </div>
+                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', margin: 0 }}>
+                      No MT5 accounts match the selected criteria.
+                    </p>
+                    {onBulkImport && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={onBulkImport}
+                        style={{ borderColor: 'rgba(99, 102, 241, 0.3)', color: '#c7d2fe', marginTop: '6px' }}
+                      >
+                        <Upload size={13} />
+                        <span>Bulk Import Accounts</span>
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ) : (
@@ -244,7 +295,7 @@ export default function AccountsTable({
                       ${(acc.equity || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
 
-                    {/* Floating P/L */}
+                    {/* Floating & Closed P/L */}
                     <td style={{ padding: '14px 16px' }} className="font-mono">
                       <span style={{
                         color: isProfitPos ? '#34d399' : '#fb7185',
@@ -255,6 +306,11 @@ export default function AccountsTable({
                       }}>
                         {isProfitPos ? '+' : ''}${profit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
+                      {acc.daily_closed_pnl !== undefined && Number(acc.daily_closed_pnl) !== 0 && (
+                        <div style={{ fontSize: '0.7rem', color: Number(acc.daily_closed_pnl || 0) >= 0 ? '#34d399' : '#fb7185', opacity: 0.85, marginTop: '2px' }}>
+                          Day: {Number(acc.daily_closed_pnl || 0) < 0 ? '-' : Number(acc.daily_closed_pnl || 0) > 0 ? '+' : ''}${Math.abs(Number(acc.daily_closed_pnl || 0)).toFixed(2)}
+                        </div>
+                      )}
                     </td>
 
                     {/* Free Margin */}

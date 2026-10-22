@@ -8,8 +8,12 @@ class AccountCreate(BaseModel):
     name: Optional[str] = Field(default="", description="Display label / user name")
     target_node_id: Optional[str] = Field(default="auto", description="'auto' or specific Worker Node ID")
     expert: Optional[str] = Field(default="", description="Expert Advisor name (optional)")
-    symbol: Optional[str] = Field(default="XAUUSD", description="Default trading symbol")
-    timeframe: Optional[str] = Field(default="M1", description="Default timeframe (M1, M5, H1)")
+    symbol: Optional[str] = Field(default="", description="Trading symbol (optional)")
+    timeframe: Optional[str] = Field(default="", description="Timeframe (optional)")
+
+class AccountBulkCreate(BaseModel):
+    accounts: List[AccountCreate] = Field(..., description="List of MT5 accounts to create or update")
+    overwrite_existing: Optional[bool] = Field(default=True, description="Whether to update fields if login already exists")
 
 class AccountUpdate(BaseModel):
     password: Optional[str] = None
@@ -51,6 +55,7 @@ class SingleTerminalTelemetry(BaseModel):
     margin_free: Optional[float] = 0.0
     margin_level: Optional[float] = 0.0
     ping: Optional[int] = 0
+    daily_closed_pnl: Optional[float] = 0.0
     open_positions: Optional[List[Dict[str, Any]]] = []
     pending_orders: Optional[List[Dict[str, Any]]] = []
     deals_history: Optional[List[Dict[str, Any]]] = []

@@ -5,6 +5,7 @@ import NodeCardList from './components/NodeCardList';
 import AccountsTable from './components/AccountsTable';
 import AccountDetailModal from './components/AccountDetailModal';
 import AddAccountModal from './components/AddAccountModal';
+import BulkAddAccountsModal from './components/BulkAddAccountsModal';
 import AddNodeModal from './components/AddNodeModal';
 import LiveLogsDrawer from './components/LiveLogsDrawer';
 import CopyTradingView from './components/CopyTradingView';
@@ -35,6 +36,7 @@ export default function App() {
   // Modal states
   const [selectedAccount, setSelectedAccount] = useState(null);
   const [showAddAccountModal, setShowAddAccountModal] = useState(false);
+  const [showBulkAddModal, setShowBulkAddModal] = useState(false);
   const [showAddNodeModal, setShowAddNodeModal] = useState(false);
   const [showLogsDrawer, setShowLogsDrawer] = useState(false);
 
@@ -209,6 +211,7 @@ export default function App() {
         currentView={currentView}
         onSelectView={setCurrentView}
         onAddAccount={() => setShowAddAccountModal(true)}
+        onBulkImport={() => setShowBulkAddModal(true)}
         onAddNode={() => setShowAddNodeModal(true)}
         onToggleLogs={() => setShowLogsDrawer(!showLogsDrawer)}
         onRefresh={loadData}
@@ -218,6 +221,7 @@ export default function App() {
       <main style={{ flex: 1, maxWidth: '1440px', width: '100%', margin: '0 auto', padding: '24px 32px 48px' }}>
         {currentView === 'copier' ? (
           <CopyTradingView
+            summary={summary}
             groups={copyGroups}
             accounts={accounts}
             copiedTrades={copiedTrades}
@@ -256,6 +260,7 @@ export default function App() {
               onRestart={handleRestart}
               onDelete={handleDeleteAccount}
               onSelectAccount={(acc) => setSelectedAccount(acc)}
+              onBulkImport={() => setShowBulkAddModal(true)}
             />
           </>
         )}
@@ -275,6 +280,20 @@ export default function App() {
           nodes={nodes}
           onClose={() => setShowAddAccountModal(false)}
           onSave={handleSaveAccount}
+          onSwitchToBulk={() => {
+            setShowAddAccountModal(false);
+            setShowBulkAddModal(true);
+          }}
+        />
+      )}
+
+      {showBulkAddModal && (
+        <BulkAddAccountsModal
+          nodes={nodes}
+          onClose={() => setShowBulkAddModal(false)}
+          onSuccess={() => {
+            loadData();
+          }}
         />
       )}
 
