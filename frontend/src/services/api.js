@@ -36,14 +36,6 @@ export async function createAccountsBulk(payload) {
   return res.json();
 }
 
-export async function uploadAccountsCsv(formData) {
-  const res = await fetch(`${API_BASE}/accounts/upload-csv`, {
-    method: 'POST',
-    body: formData
-  });
-  return res.json();
-}
-
 export async function updateAccount(login, payload) {
   const res = await fetch(`${API_BASE}/accounts/${login}`, {
     method: 'PUT',

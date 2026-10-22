@@ -1,5 +1,5 @@
 import csv
-from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Query
 from typing import Optional, List, Dict, Any
 from .schemas import AccountCreate, AccountUpdate, AccountBulkCreate
 from .db import (
@@ -146,40 +146,6 @@ def add_accounts_bulk(payload: AccountBulkCreate):
         "message": f"Bulk import complete: {res['created']} added, {res['updated']} updated, {len(res['errors'])} failed.",
         **res
     }
-
-@router.post("/upload-csv")
-async def upload_accounts_csv(
-    file: UploadFile = File(...),
-    overwrite_existing: bool = Form(True),
-    default_server: str = Form(""),
-    default_node: str = Form("auto"),
-    default_symbol: str = Form("XAUUSD"),
-    default_timeframe: str = Form("M1")
-):
-    try:
-        content_bytes = await file.read()
-        content_str = content_bytes.decode('utf-8', errors='replace')
-        parsed = parse_csv_or_text_content(
-            content_str,
-            default_server=default_server,
-            default_node=default_node,
-            default_symbol=default_symbol,
-            default_timeframe=default_timeframe
-        )
-        if not parsed:
-            raise HTTPException(status_code=400, detail="No valid MT5 account entries detected in the uploaded file.")
-
-        res = create_accounts_bulk(parsed, overwrite_existing=overwrite_existing)
-        return {
-            "success": True,
-            "filename": file.filename,
-            "message": f"Processed {res['total']} accounts: {res['created']} added, {res['updated']} updated, {len(res['errors'])} failed.",
-            **res
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to process CSV file: {str(e)}")
 
 @router.get("/{login}")
 def get_account(login: int):
