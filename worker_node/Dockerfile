@@ -4,9 +4,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV WINEDEBUG=-all
 ENV WINEARCH=win64
 ENV WINEPREFIX=/root/.wine
-ENV WINEDLLOVERRIDES="mscoree,mshtml,winepulse,winealsa="
+ENV WINEDLLOVERRIDES="mscoree,mshtml,winepulse,winealsa,d3d9,d3d11,dxgi,opengl32="
 ENV PATH="/opt/wine-stable/bin:${PATH}"
 ENV DISPLAY=:99
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONOPTIMIZE=1
 
 WORKDIR /app
 
@@ -30,12 +32,16 @@ RUN dpkg --add-architecture i386 && \
     rm -rf /var/lib/apt/lists/*
 
 # 2. Initialize Wine prefix and install Windows 64-bit Python 3.11
-RUN Xvfb :99 -screen 0 1024x768x16 -nolisten tcp & \
+RUN Xvfb :99 -screen 0 640x480x8 -nocursor -nolisten tcp -extension GLX -extension RANDR & \
     XVFB_PID=$! && \
     sleep 2 && \
     wineboot -u && wineserver -w && \
     wine reg add 'HKCU\Software\Wine' /v Version /t REG_SZ /d win10 /f && wineserver -w && \
     wine reg add 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\AeDebug' /v Auto /t REG_SZ /d 0 /f && wineserver -w && \
+    wine reg add 'HKCU\Software\Wine\Direct3D' /v DirectDrawRenderer /t REG_SZ /d gdi /f && wineserver -w && \
+    wine reg add 'HKCU\Software\Wine\Direct3D' /v csmt /t REG_DWORD /d 0 /f && wineserver -w && \
+    wine reg add 'HKCU\Software\Wine\Direct3D' /v StrictDrawOrdering /t REG_SZ /d disabled /f && wineserver -w && \
+    wine reg add 'HKCU\Software\Wine\Direct3D' /v OffscreenRenderingMode /t REG_SZ /d backbuffer /f && wineserver -w && \
     wget -q https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe -O /tmp/python-installer.exe && \
     wine /tmp/python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_launcher=0 Shortcuts=0 Include_doc=0 Include_test=0 SimpleInstall=1 Include_pip=1 && \
     wineserver -w && \

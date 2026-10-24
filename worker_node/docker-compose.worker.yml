@@ -16,9 +16,18 @@ services:
       - MAX_TERMINALS=${MAX_TERMINALS:-30}
       - POLL_INTERVAL=8
       - "FAST_POLL_INTERVAL=${FAST_POLL_INTERVAL:-0.08}"
+      - "SLAVE_POS_INTERVAL=${SLAVE_POS_INTERVAL:-1.0}"
       - "COMMAND_POLL_INTERVAL=${COMMAND_POLL_INTERVAL:-0.15}"
       - "TELEMETRY_INTERVAL=${TELEMETRY_INTERVAL:-2.0}"
+      - "PYTHONDONTWRITEBYTECODE=1"
+      - "PYTHONOPTIMIZE=1"
     volumes:
       - ./CLIENTS:/app/CLIENTS
       - ../Master MT5:/app/master_mt5:ro
+    tmpfs:
+      - /tmp:size=128M
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     ipc: host

@@ -64,18 +64,18 @@ def validate_terminal_executable(path: str) -> tuple[bool, str]:
         return False, f"Failed to inspect executable '{path}': {e}"
 
 def trim_working_set(pid=None):
-    """Trims unused working set memory pages on Windows to minimize physical RAM footprint."""
-    if os.name != "nt" or is_wine():
-        return
+    """Trims unused working set memory pages on Windows/Wine to minimize physical RAM footprint."""
     try:
         import ctypes
-        PROCESS_QUERY_INFORMATION = 0x0400
-        PROCESS_SET_QUOTA = 0x0100
-        target_pid = pid or os.getpid()
-        h_proc = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, False, target_pid)
-        if h_proc:
-            ctypes.windll.psapi.EmptyWorkingSet(h_proc)
-            ctypes.windll.kernel32.CloseHandle(h_proc)
+        if hasattr(ctypes, "windll") and hasattr(ctypes.windll, "kernel32"):
+            PROCESS_QUERY_INFORMATION = 0x0400
+            PROCESS_SET_QUOTA = 0x0100
+            target_pid = pid or os.getpid()
+            h_proc = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, False, target_pid)
+            if h_proc:
+                if hasattr(ctypes.windll, "psapi"):
+                    ctypes.windll.psapi.EmptyWorkingSet(h_proc)
+                ctypes.windll.kernel32.CloseHandle(h_proc)
     except Exception:
         pass
 
@@ -341,6 +341,8 @@ class WorkerManager:
             cmd.extend(["--symbol", creds["symbol"]])
         if creds.get("timeframe"):
             cmd.extend(["--timeframe", creds["timeframe"]])
+        if creds.get("is_master"):
+            cmd.append("--is-master")
 
         creation_flags = 0
         if os.name == "nt" and not is_wine():

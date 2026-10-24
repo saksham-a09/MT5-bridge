@@ -5,19 +5,21 @@ echo "=========================================================="
 echo " Starting MT5 Worker Node Container (Wine + Xvfb)        "
 echo "=========================================================="
 
-# 1. Clean stale locks and start virtual X11 display buffer (800x600 for minimal CPU/RAM rasterization)
+# 1. Clean stale locks and start low-footprint virtual X11 display buffer (640x480x8)
 export DISPLAY=:99
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
-Xvfb :99 -screen 0 800x600x16 -nolisten tcp &
+Xvfb :99 -screen 0 640x480x8 -nocursor -nolisten tcp -extension Composite -extension GLX -extension RANDR &
 XVFB_PID=$!
-echo "[+] Virtual X11 display started on :99 (PID: $XVFB_PID)"
+echo "[+] Low-footprint virtual X11 display started on :99 (PID: $XVFB_PID, 640x480x8)"
 
-# 2. Configure Wine environment (disable audio and debug logging to eliminate CPU overhead)
+# 2. Configure Wine environment (disable 3D acceleration, audio, and debug logging)
 export WINEDEBUG=-all
 export WINEARCH=win64
 export WINEPREFIX=${WINEPREFIX:-/root/.wine}
-export WINEDLLOVERRIDES="mscoree,mshtml,winepulse,winealsa="
+export WINEDLLOVERRIDES="mscoree,mshtml,winepulse,winealsa,d3d9,d3d11,dxgi,opengl32="
 export PATH="/opt/wine-stable/bin:${PATH}"
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONOPTIMIZE=1
 
 # Wait briefly for Xvfb initialization
 sleep 2

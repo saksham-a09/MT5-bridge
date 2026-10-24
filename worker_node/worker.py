@@ -175,20 +175,46 @@ def update_ini_template(template_content, login, password, server, expert=None, 
 
 
 def trim_working_set(pid=None):
-    """Trims unused working set memory pages on Windows to minimize physical RAM footprint."""
-    if os.name != "nt" or is_wine():
-        return
+    """Trims unused working set memory pages on Windows/Wine to minimize physical RAM footprint."""
     try:
         import ctypes
-        PROCESS_QUERY_INFORMATION = 0x0400
-        PROCESS_SET_QUOTA = 0x0100
-        target_pid = pid or os.getpid()
-        h_proc = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, False, target_pid)
-        if h_proc:
-            ctypes.windll.psapi.EmptyWorkingSet(h_proc)
-            ctypes.windll.kernel32.CloseHandle(h_proc)
+        if hasattr(ctypes, "windll") and hasattr(ctypes.windll, "kernel32"):
+            PROCESS_QUERY_INFORMATION = 0x0400
+            PROCESS_SET_QUOTA = 0x0100
+            target_pid = pid or os.getpid()
+            h_proc = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, False, target_pid)
+            if h_proc:
+                if hasattr(ctypes.windll, "psapi"):
+                    ctypes.windll.psapi.EmptyWorkingSet(h_proc)
+                ctypes.windll.kernel32.CloseHandle(h_proc)
     except Exception:
         pass
+
+
+def clean_terminal_logs(clone_dir, logger=None):
+    """Purges old MT5 logs and crashdumps to prevent disk growth."""
+    for log_dir in [
+        os.path.join(clone_dir, "MQL5", "Logs"),
+        os.path.join(clone_dir, "Logs"),
+        os.path.join(clone_dir, "tester", "logs"),
+        os.path.join(clone_dir, "CrashDumps")
+    ]:
+        if not os.path.isdir(log_dir):
+            continue
+        try:
+            now = time.time()
+            for fname in os.listdir(log_dir):
+                fpath = os.path.join(log_dir, fname)
+                if not os.path.isfile(fpath):
+                    continue
+                # Remove if older than 2 days (172800s) or > 10MB
+                if now - os.path.getmtime(fpath) > 172800 or os.path.getsize(fpath) > 10 * 1024 * 1024:
+                    try:
+                        os.remove(fpath)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
 
 def patch_mt5_experts_config(clone_dir, logger=None):
@@ -219,7 +245,7 @@ def patch_mt5_experts_config(clone_dir, logger=None):
             "ProxyEnable": "0"
         },
         "charts": {
-            "MaxBars": "100",
+            "MaxBars": "50",
             "PrintColor": "0",
             "SaveDeleted": "0",
             "ShowTradeLevels": "0",
@@ -310,7 +336,7 @@ def patch_mt5_experts_config(clone_dir, logger=None):
 
 class MT5Worker:
     def __init__(self, login_id, password, server, terminal_path, clone_dir,
-                 config_template_path, sync_interval=5, expert=None, symbol=None, timeframe=None):
+                 config_template_path, sync_interval=5, expert=None, symbol=None, timeframe=None, is_master=False):
         self.login_id = int(login_id)
         self.password = str(password)
         self.server = str(server)
@@ -318,6 +344,7 @@ class MT5Worker:
         self.clone_dir = os.path.abspath(os.path.normpath(clone_dir))
         self.config_template_path = os.path.abspath(os.path.normpath(config_template_path)) if config_template_path else None
         self.sync_interval = sync_interval
+        self.is_master = bool(is_master)
         
         self.expert = str(expert).strip() if expert and str(expert).strip() else ""
         self.symbol = str(symbol).strip() if symbol and str(symbol).strip() else "XAUUSD"
@@ -520,16 +547,23 @@ class MT5Worker:
                 return None
             shutil_dest = os.path.join(self.clone_dir, os.path.basename(self.terminal_path))
             try:
-                shutil.copy2(self.terminal_path, shutil_dest)
-                self.logger.info(f"Copied terminal executable to {shutil_dest}")
+                try:
+                    os.link(self.terminal_path, shutil_dest)
+                    self.logger.info(f"Hard-linked terminal executable to {shutil_dest} (shared memory pages)")
+                except OSError:
+                    shutil.copy2(self.terminal_path, shutil_dest)
+                    self.logger.info(f"Copied terminal executable to {shutil_dest}")
                 return shutil_dest
             except Exception as e:
-                self.logger.error(f"Failed to copy terminal executable: {e}")
+                self.logger.error(f"Failed to link/copy terminal executable: {e}")
                 return None
         return None
 
     def launch_mt5(self):
-        """Starts the MT5 terminal process in portable mode with cleared charts."""
+        """Starts the MT5 terminal process in portable mode with cleared charts and hard-linked static binaries."""
+        # 0. Clean stale logs and crash dumps
+        clean_terminal_logs(self.clone_dir, self.logger)
+
         # 1. Clone directory if executable missing
         if not self._has_executable():
             master_dir = os.path.dirname(self.terminal_path) if os.path.isfile(self.terminal_path) else self.terminal_path
@@ -549,16 +583,46 @@ class MT5Worker:
                     break
 
             try:
-                def _ignore_bloat(path, names):
-                    # Exclude heavy non-essential folders to save disk space and RAM
-                    ignored = []
-                    for name in names:
-                        if name.lower() in ("bases", "sounds", "help", "tester", "templates"):
-                            ignored.append(name)
-                    return ignored
+                # Intelligent link-cloner: hard-link static read-only files (saving disk & sharing page cache in RAM)
+                hard_linked = 0
+                copied = 0
+                for root, dirs, files in os.walk(master_dir):
+                    rel_path = os.path.relpath(root, master_dir)
+                    if rel_path != ".":
+                        top_dir = rel_path.split(os.sep)[0].lower()
+                        if top_dir in ("bases", "sounds", "help", "tester", "templates", "crashdumps"):
+                            continue
+                    dest_dir = os.path.join(self.clone_dir, rel_path) if rel_path != "." else self.clone_dir
+                    os.makedirs(dest_dir, exist_ok=True)
+                    for file in files:
+                        f_lower = file.lower()
+                        if f_lower.endswith((".log", ".dmp", ".tmp", ".wav", ".mp3", ".pdf", ".chm")):
+                            continue
+                        src_file = os.path.join(root, file)
+                        dst_file = os.path.join(dest_dir, file)
+                        if os.path.exists(dst_file):
+                            continue
+                        # If file is config or custom profile, copy it independently so instances don't collide
+                        is_instance_specific = (
+                            f_lower in ("config.ini", "common.ini", "terminal.ini") or
+                            "profiles" in rel_path.lower() or
+                            "logs" in rel_path.lower()
+                        )
+                        if is_instance_specific:
+                            try:
+                                shutil.copy2(src_file, dst_file)
+                                copied += 1
+                            except Exception:
+                                pass
+                        else:
+                            try:
+                                os.link(src_file, dst_file)
+                                hard_linked += 1
+                            except OSError:
+                                shutil.copy2(src_file, dst_file)
+                                copied += 1
 
-                shutil.copytree(master_dir, self.clone_dir, ignore=_ignore_bloat, dirs_exist_ok=True)
-                self.logger.info(f"Successfully cloned master MT5 structure to {self.clone_dir} (resource optimized)")
+                self.logger.info(f"Cloned MT5 structure: {hard_linked} hard-links (RAM/disk optimized), {copied} copied files.")
             except Exception as e:
                 self.logger.error(f"Failed to clone master MT5 directory: {e}")
                 return False
@@ -704,6 +768,15 @@ class MT5Worker:
                 self.ensure_autotrading_enabled()
                 self.prune_market_watch()
                 self.optimize_process_priority()
+                # Close all open charts to eliminate raster and bar array allocations in RAM
+                try:
+                    open_charts = mt5.charts_get() or ()
+                    for c in open_charts:
+                        mt5.chart_close(c)
+                    if open_charts:
+                        self.logger.info(f"Closed {len(open_charts)} active chart(s) for 0-chart low-RAM operation.")
+                except Exception:
+                    pass
                 return True
             else:
                 self.logger.warning(f"MT5 init attempt {attempt}/{max_attempts} failed: {mt5.last_error()}")
@@ -1666,8 +1739,17 @@ class MT5Worker:
 
         fast_poll_interval = float(os.environ.get("FAST_POLL_INTERVAL", "0.08"))
         telemetry_interval = float(os.environ.get("TELEMETRY_INTERVAL", "2.0"))
+        slave_pos_interval = float(os.environ.get("SLAVE_POS_INTERVAL", "1.0"))
+        pos_check_interval = fast_poll_interval if self.is_master else slave_pos_interval
 
         last_telemetry_time = 0
+        last_pos_check_time = 0
+        last_log_clean_time = 0
+
+        self.logger.info(
+            f"Tuning: Role={'MASTER' if self.is_master else 'SLAVE'}, "
+            f"PositionScanInterval={pos_check_interval}s, TelemetryInterval={telemetry_interval}s"
+        )
 
         while not self.stop_event.is_set():
             did_work = False
@@ -1675,10 +1757,12 @@ class MT5Worker:
                 # 1. Process any pending trade commands INSTANTLY
                 did_work = self.process_command_queue()
 
-                # 2. Ultra-fast position scanner to catch master trade events instantly
-                self.check_fast_position_changes()
-
                 now = time.time()
+                # 2. Position scanner: ultra-fast (80ms) for Master, conservative (1.0s) for Slave
+                if now - last_pos_check_time >= pos_check_interval:
+                    self.check_fast_position_changes()
+                    last_pos_check_time = now
+
                 # 3. Check connection and full telemetry every telemetry_interval (default 2.0s)
                 if now - last_telemetry_time >= telemetry_interval:
                     proc_running = self.is_terminal_running()
@@ -1709,6 +1793,11 @@ class MT5Worker:
                             consecutive_failures = 0
 
                     last_telemetry_time = now
+
+                # 4. Periodic log cleanup (every 30 mins)
+                if now - last_log_clean_time >= 1800.0:
+                    clean_terminal_logs(self.clone_dir, self.logger)
+                    last_log_clean_time = now
 
             except Exception as e:
                 self.logger.error(f"Monitor loop error: {e}")
@@ -1763,6 +1852,7 @@ if __name__ == "__main__":
     parser.add_argument("--expert", default="", help="EA Expert name")
     parser.add_argument("--symbol", default="XAUUSD", help="Symbol")
     parser.add_argument("--timeframe", default="M1", help="Timeframe")
+    parser.add_argument("--is-master", action="store_true", help="Flag if this terminal is a copy trading master")
 
     args = parser.parse_args()
 
@@ -1776,7 +1866,8 @@ if __name__ == "__main__":
         sync_interval=args.interval,
         expert=args.expert,
         symbol=args.symbol,
-        timeframe=args.timeframe
+        timeframe=args.timeframe,
+        is_master=args.is_master
     )
 
     worker.start()

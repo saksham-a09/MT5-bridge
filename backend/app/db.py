@@ -682,12 +682,14 @@ def update_account_telemetry(login: int, data: Dict[str, Any]):
         ))
 
 def get_assigned_accounts_for_node(node_id: str) -> List[Dict[str, Any]]:
-    """Returns all accounts assigned to run on this node with their credentials."""
+    """Returns all accounts assigned to run on this node with their credentials and master/slave role."""
     with get_db() as conn:
         cursor = conn.execute("""
-        SELECT login, password, server, name, status, expert, symbol, timeframe
-        FROM accounts
-        WHERE assigned_node_id = ?
+        SELECT a.login, a.password, a.server, a.name, a.status, a.expert, a.symbol, a.timeframe,
+               CASE WHEN cg.id IS NOT NULL THEN 1 ELSE 0 END as is_master
+        FROM accounts a
+        LEFT JOIN copy_groups cg ON cg.master_login = a.login AND cg.status = 'active'
+        WHERE a.assigned_node_id = ?
         """, (node_id,))
         return [dict(r) for r in cursor.fetchall()]
 
