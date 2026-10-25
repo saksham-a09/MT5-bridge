@@ -11,7 +11,6 @@ import threading
 import psutil
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
-
 def load_dotenv(dotenv_path=".env"):
     if not os.path.exists(dotenv_path):
         return False
@@ -79,38 +78,97 @@ def trim_working_set(pid=None):
     except Exception:
         pass
 
+class PersistentHttpClient:
+    """High-performance HTTP connection pool reusing Keep-Alive TCP sockets to reduce CPU & handshake overhead."""
+    def __init__(self):
+        self._connections = {}
+        self._lock = threading.Lock()
+
+    def request(self, method, url, data=None, headers=None, timeout=10):
+        if "://localhost:" in url:
+            url = url.replace("://localhost:", "://127.0.0.1:")
+        elif "://localhost/" in url:
+            url = url.replace("://localhost/", "://127.0.0.1/")
+
+        parsed = urlparse(url)
+        scheme = parsed.scheme.lower() or "http"
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or (443 if scheme == "https" else 80)
+        path = parsed.path or "/"
+        if parsed.query:
+            path += f"?{parsed.query}"
+
+        req_headers = {"Accept": "application/json", "Connection": "keep-alive"}
+        if headers:
+            req_headers.update(headers)
+
+        payload = None
+        if data is not None:
+            payload = json.dumps(data).encode("utf-8")
+            req_headers["Content-Type"] = "application/json"
+            req_headers["Content-Length"] = str(len(payload))
+
+        conn_key = (scheme, host, port)
+        with self._lock:
+            conn = self._connections.get(conn_key)
+            if conn is None:
+                if scheme == "https":
+                    import ssl
+                    ctx = ssl.create_default_context()
+                    conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=ctx)
+                else:
+                    conn = http.client.HTTPConnection(host, port, timeout=timeout)
+                self._connections[conn_key] = conn
+
+        for attempt in range(2):
+            try:
+                conn.request(method, path, body=payload, headers=req_headers)
+                resp = conn.getresponse()
+                body = resp.read().decode("utf-8")
+                status = resp.status
+                if status >= 400:
+                    try:
+                        res = json.loads(body)
+                        if isinstance(res, dict):
+                            res["status_code"] = status
+                        return res
+                    except Exception:
+                        return {"success": False, "error": f"HTTP {status}: {body}", "status_code": status}
+                return json.loads(body) if body else {}
+            except Exception as e:
+                # Socket timed out or remote closed, reconnect
+                with self._lock:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    if scheme == "https":
+                        import ssl
+                        ctx = ssl.create_default_context()
+                        conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=ctx)
+                    else:
+                        conn = http.client.HTTPConnection(host, port, timeout=timeout)
+                    self._connections[conn_key] = conn
+                if attempt == 1:
+                    # Final fallback to standard urllib if Keep-Alive error persists
+                    try:
+                        req = Request(url, data=payload, headers=req_headers, method=method)
+                        with urlopen(req, timeout=timeout) as fb_resp:
+                            fb_body = fb_resp.read().decode("utf-8")
+                            return json.loads(fb_body) if fb_body else {}
+                    except HTTPError as he:
+                        try:
+                            return json.loads(he.read().decode("utf-8"))
+                        except Exception:
+                            return {"success": False, "error": str(he), "status_code": he.code}
+                    except Exception as fe:
+                        return {"success": False, "error": str(fe)}
+        return {"success": False, "error": "Request failed"}
+
+_http_client = PersistentHttpClient()
+
 def api_request(method, url, data=None, headers=None, timeout=10):
-    # Avoid Windows IPv6 DNS resolution lag/timeout on localhost
-    if "://localhost:" in url:
-        url = url.replace("://localhost:", "://127.0.0.1:")
-    elif "://localhost/" in url:
-        url = url.replace("://localhost/", "://127.0.0.1/")
-
-    req_headers = {"Accept": "application/json"}
-    if headers:
-        req_headers.update(headers)
-    
-    payload = None
-    if data is not None:
-        payload = json.dumps(data).encode("utf-8")
-        req_headers["Content-Type"] = "application/json"
-
-    req = Request(url, data=payload, headers=req_headers, method=method)
-    try:
-        with urlopen(req, timeout=timeout) as resp:
-            body = resp.read().decode("utf-8")
-            return json.loads(body) if body else {}
-    except HTTPError as e:
-        err_body = e.read().decode("utf-8")
-        try:
-            res = json.loads(err_body)
-            if isinstance(res, dict):
-                res["status_code"] = e.code
-            return res
-        except Exception:
-            return {"success": False, "error": f"HTTP {e.code}: {err_body}", "status_code": e.code}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    return _http_client.request(method, url, data=data, headers=headers, timeout=timeout)
 
 class WorkerManager:
     def __init__(self, hub_url, node_id, node_name, api_key, master_mt5, clients_dir,
@@ -132,6 +190,8 @@ class WorkerManager:
         
         self.running_workers = {}  # login_id -> { "process": Popen, "config": dict, "dir": str }
         self.dispatched_cmd_ids = set()  # Track dispatched command IDs to prevent duplicate execution
+        self.pending_results = set()  # Track cmd_ids currently waiting for worker results
+        self.last_results_scan = 0
         self.is_running = True
 
         os.makedirs(self.clients_dir, exist_ok=True)
@@ -144,6 +204,30 @@ class WorkerManager:
         terminated = 0
         login_id_str = str(login_id)
         my_pid = os.getpid()
+
+        login_key = int(login_id) if str(login_id).isdigit() else login_id
+        if login_key in self.running_workers:
+            proc = self.running_workers[login_key].get("process")
+            if proc:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=1)
+                    terminated += 1
+                except Exception:
+                    pass
+
+        clone_dir = os.path.join(self.clients_dir, f"clone_{login_id_str}")
+        pid_file = os.path.join(clone_dir, "terminal.pid")
+        if os.path.isfile(pid_file):
+            try:
+                with open(pid_file, "r") as pf:
+                    t_pid = int(pf.read().strip())
+                    if psutil.pid_exists(t_pid):
+                        psutil.Process(t_pid).kill()
+                        terminated += 1
+                os.remove(pid_file)
+            except Exception:
+                pass
 
         try:
             procs = list(psutil.process_iter())
@@ -502,6 +586,7 @@ class WorkerManager:
                     json.dump(payload, f)
                 os.replace(temp_file, cmd_file)
                 self.dispatched_cmd_ids.add(cmd_id)
+                self.pending_results.add(cmd_id)
                 if len(self.dispatched_cmd_ids) > 1000:
                     self.dispatched_cmd_ids = set(list(self.dispatched_cmd_ids)[-500:])
                 self.log(f"Fast-path dispatched command {cmd_id} ({cmd.get('action')}) to Worker {login}.")
@@ -514,32 +599,42 @@ class WorkerManager:
         self.dispatch_commands(commands)
 
     def collect_and_report_results(self):
-        """Scans for execution results written by workers and submits them to Central Hub."""
+        """Scans for execution results written by workers and submits them to Central Hub.
+        Smart-throttles when no commands are pending to save CPU."""
+        now = time.time()
+        # If no commands are in-flight, throttle directory scan to once every 1.5s
+        if not self.pending_results and (now - self.last_results_scan < 1.5):
+            return
+        self.last_results_scan = now
+
         headers = {"x-node-api-key": self.api_key}
         for login, info in list(self.running_workers.items()):
             results_dir = os.path.join(info["dir"], "results")
             if not os.path.isdir(results_dir):
                 continue
             try:
-                for fname in os.listdir(results_dir):
-                    if not fname.endswith(".json"):
-                        continue
-                    rpath = os.path.join(results_dir, fname)
-                    cmd_id = fname[:-5]
-                    try:
-                        with open(rpath, "r", encoding="utf-8") as f:
-                            res_data = json.load(f)
-                        api_request(
-                            "POST",
-                            f"{self.hub_url}/api/nodes/{self.node_id}/commands/{cmd_id}/result",
-                            data=res_data,
-                            headers=headers,
-                            timeout=3
-                        )
-                        os.remove(rpath)
-                        self.log(f"Reported execution result for command {cmd_id} (Status: {res_data.get('status')}).")
-                    except Exception as e:
-                        self.log(f"Error submitting result for {cmd_id}: {e}", level="WARNING")
+                with os.scandir(results_dir) as entries:
+                    for entry in entries:
+                        if not entry.name.endswith(".json") or not entry.is_file():
+                            continue
+                        fname = entry.name
+                        rpath = entry.path
+                        cmd_id = fname[:-5]
+                        try:
+                            with open(rpath, "r", encoding="utf-8") as f:
+                                res_data = json.load(f)
+                            api_request(
+                                "POST",
+                                f"{self.hub_url}/api/nodes/{self.node_id}/commands/{cmd_id}/result",
+                                data=res_data,
+                                headers=headers,
+                                timeout=3
+                            )
+                            os.remove(rpath)
+                            self.pending_results.discard(cmd_id)
+                            self.log(f"Reported execution result for command {cmd_id} (Status: {res_data.get('status')}).")
+                        except Exception as e:
+                            self.log(f"Error submitting result for {cmd_id}: {e}", level="WARNING")
             except Exception:
                 pass
 
@@ -561,7 +656,7 @@ class WorkerManager:
         last_cmd_poll = 0
         last_mem_trim = 0
 
-        cmd_poll_interval = float(os.environ.get("COMMAND_POLL_INTERVAL", "0.15"))
+        cmd_poll_interval = float(os.environ.get("COMMAND_POLL_INTERVAL", "0.40"))
         telemetry_interval = float(os.environ.get("TELEMETRY_INTERVAL", "2.0"))
 
         while self.is_running:
@@ -573,7 +668,7 @@ class WorkerManager:
             # 2. Check and report execution results from workers (< 10ms)
             self.collect_and_report_results()
 
-            # 3. High-speed fallback command poll (default 150ms)
+            # 3. High-speed fallback command poll (default 400ms)
             if now - last_cmd_poll >= cmd_poll_interval:
                 try:
                     self.poll_and_dispatch_commands()
@@ -619,7 +714,9 @@ class WorkerManager:
                     pass
                 last_mem_trim = now
 
-            time.sleep(0.05)
+            # Adaptive sleep: 20ms during active command execution burst, 80ms when idle
+            sleep_dur = 0.02 if self.pending_results else 0.08
+            time.sleep(sleep_dur)
 
         self.shutdown()
 
