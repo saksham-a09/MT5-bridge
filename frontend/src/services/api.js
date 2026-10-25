@@ -82,6 +82,34 @@ export async function restartAccount(login) {
   return res.json();
 }
 
+export async function closePosition(login, ticket) {
+  const res = await fetch(`${API_BASE}/accounts/${login}/positions/${ticket}/close`, {
+    method: 'POST'
+  });
+  return res.json();
+}
+
+export async function closeAllPositions(login) {
+  const res = await fetch(`${API_BASE}/accounts/${login}/positions/close-all`, {
+    method: 'POST'
+  });
+  return res.json();
+}
+
+export async function cancelPendingOrder(login, ticket) {
+  const res = await fetch(`${API_BASE}/accounts/${login}/orders/${ticket}/cancel`, {
+    method: 'POST'
+  });
+  return res.json();
+}
+
+export async function cancelAllPendingOrders(login) {
+  const res = await fetch(`${API_BASE}/accounts/${login}/orders/cancel-all`, {
+    method: 'POST'
+  });
+  return res.json();
+}
+
 export async function fetchNodes() {
   const res = await fetch(`${API_BASE}/nodes`);
   return res.json();

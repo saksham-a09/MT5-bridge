@@ -566,6 +566,26 @@ def batch_account_action(logins: List[int], action: str, target_node_id: Optiona
             conn.execute(f"UPDATE accounts SET target_node_id = ?, updated_at = ? WHERE login IN ({placeholders})", [node_val, now] + clean_logins)
             add_log(f"Batch action: assigned {len(clean_logins)} accounts to node '{node_val}'.", source="DB", conn=conn)
 
+        elif action == "close_all_positions":
+            cursor = conn.execute(f"SELECT login, assigned_node_id FROM accounts WHERE login IN ({placeholders}) AND status = 'active'", clean_logins)
+            rows = cursor.fetchall()
+            for r in rows:
+                l_id = r["login"]
+                n_id = r["assigned_node_id"]
+                if n_id:
+                    enqueue_node_command(n_id, l_id, "CLOSE_ALL", {"action": "CLOSE_ALL"})
+            add_log(f"Batch action: close all positions signal sent for {len(rows)} active accounts.", source="DB", conn=conn)
+
+        elif action == "cancel_all_orders":
+            cursor = conn.execute(f"SELECT login, assigned_node_id FROM accounts WHERE login IN ({placeholders}) AND status = 'active'", clean_logins)
+            rows = cursor.fetchall()
+            for r in rows:
+                l_id = r["login"]
+                n_id = r["assigned_node_id"]
+                if n_id:
+                    enqueue_node_command(n_id, l_id, "CANCEL_ALL_PENDING", {"action": "CANCEL_ALL_PENDING"})
+            add_log(f"Batch action: cancel all pending orders signal sent for {len(rows)} active accounts.", source="DB", conn=conn)
+
     return {"success": True, "action": action, "affected": len(clean_logins), "logins": clean_logins}
 
 # --- Worker Nodes Helpers ---

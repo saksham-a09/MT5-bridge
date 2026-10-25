@@ -129,6 +129,16 @@ export default function App() {
         return;
       }
     }
+    if (action === 'close_all_positions') {
+      if (!confirm(`EMERGENCY: Close ALL open positions across ${logins.length} selected account(s)?`)) {
+        return;
+      }
+    }
+    if (action === 'cancel_all_orders') {
+      if (!confirm(`Cancel ALL pending orders across ${logins.length} selected account(s)?`)) {
+        return;
+      }
+    }
     try {
       const res = await batchAccountAction(logins, action, target_node_id);
       if (!res.success) throw new Error(res.message || 'Batch action failed');

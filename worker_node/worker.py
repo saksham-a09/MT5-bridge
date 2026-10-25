@@ -1434,13 +1434,13 @@ class MT5Worker:
 
         # 2. CLOSE EXISTING POSITION
         elif action == "CLOSE":
-            slave_ticket = cmd.get("slave_ticket")
+            target_ticket = cmd.get("slave_ticket") or cmd.get("ticket") or cmd.get("position_ticket")
             master_ticket = cmd.get("master_ticket")
 
             target_pos = None
             open_positions = mt5.positions_get() or ()
-            if slave_ticket:
-                target_pos = next((p for p in open_positions if p.ticket == int(slave_ticket)), None)
+            if target_ticket:
+                target_pos = next((p for p in open_positions if p.ticket == int(target_ticket)), None)
             if not target_pos and master_ticket:
                 tag = f"C:{master_ticket}"
                 target_pos = next((p for p in open_positions if tag in p.comment), None)
@@ -1448,8 +1448,8 @@ class MT5Worker:
             if not target_pos:
                 pending_orders = mt5.orders_get() or ()
                 target_order = None
-                if slave_ticket:
-                    target_order = next((o for o in pending_orders if o.ticket == int(slave_ticket)), None)
+                if target_ticket:
+                    target_order = next((o for o in pending_orders if o.ticket == int(target_ticket)), None)
                 if not target_order and master_ticket:
                     tag = f"C:{master_ticket}"
                     target_order = next((o for o in pending_orders if tag in o.comment), None)
@@ -1459,6 +1459,7 @@ class MT5Worker:
                         "order": target_order.ticket
                     }
                     mt5.order_send(cancel_req)
+                    self.write_urgent_positions(mt5.positions_get() or (), mt5.orders_get() or ())
                     return {
                         "status": "success",
                         "action": "CLOSE",
@@ -1468,42 +1469,61 @@ class MT5Worker:
                             "profit": 0.0
                         }
                     }
-                self.logger.warning(f"Position for close not found (slave: {slave_ticket}, master: {master_ticket}). Already closed.")
+                self.logger.warning(f"Position for close not found (target: {target_ticket}, master: {master_ticket}). Already closed.")
                 return {
                     "status": "success",
                     "action": "CLOSE",
                     "data": {
                         "master_ticket": master_ticket,
-                        "slave_ticket": slave_ticket,
+                        "slave_ticket": target_ticket,
                         "profit": 0.0
                     }
                 }
 
+            # Fetch fresh tick for target_pos.symbol
+            pos_symbol = target_pos.symbol
+            mt5.symbol_select(pos_symbol, True)
+            pos_tick = mt5.symbol_info_tick(pos_symbol)
+            if not pos_tick:
+                pos_tick = tick
+
             close_type = mt5.ORDER_TYPE_SELL if target_pos.type == 0 else mt5.ORDER_TYPE_BUY
-            close_price = tick.bid if target_pos.type == 0 else tick.ask
+            close_price = pos_tick.bid if target_pos.type == 0 else pos_tick.ask
 
             close_deviation = int(cmd.get("deviation", 20))
-            if "BTC" in target_pos.symbol.upper() or "ETH" in target_pos.symbol.upper() or (tick.bid > 1000):
+            if "BTC" in target_pos.symbol.upper() or "ETH" in target_pos.symbol.upper() or (close_price > 1000):
                 close_deviation = max(close_deviation, 300)
 
-            close_request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "position": target_pos.ticket,
-                "symbol": target_pos.symbol,
-                "volume": target_pos.volume,
-                "type": close_type,
-                "price": close_price,
-                "deviation": close_deviation,
-                "magic": target_pos.magic,
-                "comment": f"Close C:{master_ticket}",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC
-            }
+            filling_modes = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN]
+            close_success = False
+            last_res = None
 
-            res = mt5.order_send(close_request)
-            if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+            for f_mode in filling_modes:
+                close_request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "position": target_pos.ticket,
+                    "symbol": target_pos.symbol,
+                    "volume": target_pos.volume,
+                    "type": close_type,
+                    "price": close_price,
+                    "deviation": close_deviation,
+                    "magic": target_pos.magic,
+                    "comment": f"Close C:{master_ticket}" if master_ticket else f"Manual Close #{target_pos.ticket}",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": f_mode
+                }
+                res = mt5.order_send(close_request)
+                last_res = res
+                if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                    close_success = True
+                    break
+                if res and res.retcode != mt5.TRADE_RETCODE_INVALID_FILL:
+                    break
+
+            if close_success:
                 exec_ms = int((time.time() - start_time) * 1000)
                 self.logger.info(f"CLOSE SUCCESS Ticket #{target_pos.ticket} in {exec_ms}ms")
+                self.write_urgent_positions(mt5.positions_get() or (), mt5.orders_get() or ())
                 return {
                     "status": "success",
                     "action": "CLOSE",
@@ -1515,8 +1535,46 @@ class MT5Worker:
                     }
                 }
             else:
-                err_msg = f"Close failed: retcode={getattr(res, 'retcode', 'N/A')}"
+                err_msg = f"Close failed: retcode={getattr(last_res, 'retcode', 'N/A')}, comment={getattr(last_res, 'comment', 'N/A')}"
                 return {"status": "failed", "action": "CLOSE", "error": err_msg}
+
+        # 2B. CLOSE ALL POSITIONS
+        elif action in ("CLOSE_ALL", "CLOSE_ALL_POSITIONS"):
+            open_positions = mt5.positions_get() or ()
+            closed_tickets = []
+            failed_tickets = []
+            for pos in open_positions:
+                pos_sym = pos.symbol
+                mt5.symbol_select(pos_sym, True)
+                p_tick = mt5.symbol_info_tick(pos_sym)
+                c_price = (p_tick.bid if pos.type == 0 else p_tick.ask) if p_tick else pos.price_current
+                c_type = mt5.ORDER_TYPE_SELL if pos.type == 0 else mt5.ORDER_TYPE_BUY
+                c_req = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "position": pos.ticket,
+                    "symbol": pos.symbol,
+                    "volume": pos.volume,
+                    "type": c_type,
+                    "price": c_price,
+                    "deviation": 50,
+                    "magic": pos.magic,
+                    "comment": f"Manual CloseAll #{pos.ticket}",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_IOC
+                }
+                c_res = mt5.order_send(c_req)
+                if c_res and c_res.retcode == mt5.TRADE_RETCODE_DONE:
+                    closed_tickets.append(pos.ticket)
+                else:
+                    failed_tickets.append(pos.ticket)
+            self.write_urgent_positions(mt5.positions_get() or (), mt5.orders_get() or ())
+            return {
+                "status": "success",
+                "action": "CLOSE_ALL",
+                "closed_count": len(closed_tickets),
+                "closed_tickets": closed_tickets,
+                "failed_tickets": failed_tickets
+            }
 
         # 3. MODIFY SL/TP
         elif action == "MODIFY_SLTP":
@@ -1736,27 +1794,27 @@ class MT5Worker:
 
         # 6. CANCEL PENDING ORDER
         elif action in ("CANCEL_PENDING", "DELETE_PENDING"):
-            slave_ticket = cmd.get("slave_ticket")
+            target_ticket = cmd.get("slave_ticket") or cmd.get("ticket") or cmd.get("order_ticket")
             master_ticket = cmd.get("master_ticket")
 
             target_order = None
             pending_orders = mt5.orders_get() or ()
-            if slave_ticket:
-                target_order = next((o for o in pending_orders if o.ticket == int(slave_ticket)), None)
+            if target_ticket:
+                target_order = next((o for o in pending_orders if o.ticket == int(target_ticket)), None)
             if not target_order and master_ticket:
                 tag = f"C:{master_ticket}"
                 target_order = next((o for o in pending_orders if tag in o.comment), None)
 
             if not target_order:
                 self.logger.warning(
-                    f"Pending order for cancel not found (slave: {slave_ticket}, master: {master_ticket}). Already removed."
+                    f"Pending order for cancel not found (target: {target_ticket}, master: {master_ticket}). Already removed."
                 )
                 return {
                     "status": "success",
                     "action": "CANCEL_PENDING",
                     "data": {
                         "master_ticket": master_ticket,
-                        "slave_ticket": slave_ticket
+                        "slave_ticket": target_ticket
                     }
                 }
 
@@ -1768,6 +1826,7 @@ class MT5Worker:
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 exec_ms = int((time.time() - start_time) * 1000)
                 self.logger.info(f"CANCEL_PENDING SUCCESS Ticket #{target_order.ticket} in {exec_ms}ms")
+                self.write_urgent_positions(mt5.positions_get() or (), mt5.orders_get() or ())
                 return {
                     "status": "success",
                     "action": "CANCEL_PENDING",
@@ -1780,6 +1839,26 @@ class MT5Worker:
             else:
                 err_msg = f"Cancel pending failed: retcode={getattr(res, 'retcode', 'N/A')}, comment={getattr(res, 'comment', 'N/A')}"
                 return {"status": "failed", "action": "CANCEL_PENDING", "error": err_msg}
+
+        # 7. CANCEL ALL PENDING ORDERS
+        elif action in ("CANCEL_ALL", "CANCEL_ALL_PENDING", "DELETE_ALL_PENDING"):
+            pending_orders = mt5.orders_get() or ()
+            cancelled_tickets = []
+            for o in pending_orders:
+                cancel_req = {
+                    "action": getattr(mt5, "TRADE_ACTION_REMOVE", 8),
+                    "order": o.ticket
+                }
+                res = mt5.order_send(cancel_req)
+                if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                    cancelled_tickets.append(o.ticket)
+            self.write_urgent_positions(mt5.positions_get() or (), mt5.orders_get() or ())
+            return {
+                "status": "success",
+                "action": "CANCEL_ALL_PENDING",
+                "cancelled_count": len(cancelled_tickets),
+                "cancelled_tickets": cancelled_tickets
+            }
 
         return {"status": "failed", "error": f"Unknown action: {action}"}
 

@@ -1100,3 +1100,12 @@ select.input-field option, select.form-select option {
   border-color: rgba(244, 63, 94, 0.4);
 }
 
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+

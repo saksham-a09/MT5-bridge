@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   Play, Square, RotateCw, Trash2, ExternalLink, Search, 
-  Layers, Clock, Upload, CheckSquare, XSquare
+  Layers, Clock, Upload, CheckSquare, XSquare, XCircle
 } from 'lucide-react';
 
 export default function AccountsTable({ 
@@ -285,6 +285,36 @@ export default function AccountsTable({
             >
               <RotateCw size={12} />
               <span>Restart</span>
+            </button>
+
+            {/* Batch Close Positions */}
+            <button
+              id="btn-batch-close-positions"
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => {
+                if (onBatchAction) onBatchAction(selectedLogins, 'close_all_positions');
+              }}
+              style={{ borderColor: 'rgba(244, 63, 94, 0.4)', color: '#fb7185', fontSize: '0.78rem', padding: '5px 12px' }}
+              title="Emergency close all open positions on selected accounts"
+            >
+              <XCircle size={12} />
+              <span>Close Positions</span>
+            </button>
+
+            {/* Batch Cancel Orders */}
+            <button
+              id="btn-batch-cancel-orders"
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => {
+                if (onBatchAction) onBatchAction(selectedLogins, 'cancel_all_orders');
+              }}
+              style={{ borderColor: 'rgba(245, 158, 11, 0.4)', color: '#fbbf24', fontSize: '0.78rem', padding: '5px 12px' }}
+              title="Cancel all pending orders on selected accounts"
+            >
+              <Clock size={12} />
+              <span>Cancel Orders</span>
             </button>
 
             {/* Move to Node */}

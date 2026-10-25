@@ -1,8 +1,11 @@
 import React, { useState } from 'react';
-import { X, Layers, History, Terminal, Clock } from 'lucide-react';
+import { X, Layers, History, Terminal, Clock, XCircle, Loader2 } from 'lucide-react';
+import { closePosition, closeAllPositions, cancelPendingOrder, cancelAllPendingOrders } from '../services/api';
 
 export default function AccountDetailModal({ account, onClose, onRefresh }) {
   const [activeTab, setActiveTab] = useState('positions');
+  const [actionLoading, setActionLoading] = useState({});
+  const [actionNotice, setActionNotice] = useState(null);
 
   if (!account) return null;
 
@@ -12,6 +15,70 @@ export default function AccountDetailModal({ account, onClose, onRefresh }) {
   const isConn = Boolean(account.is_connected);
   const profit = account.profit || 0;
   const isProfitPos = profit >= 0;
+
+  const handleClosePosition = async (ticket, symbol) => {
+    if (!window.confirm(`Close position #${ticket} (${symbol}) on Account ${account.login}?`)) return;
+    setActionLoading(prev => ({ ...prev, [ticket]: true }));
+    setActionNotice(null);
+    try {
+      const res = await closePosition(account.login, ticket);
+      if (!res.success) throw new Error(res.message || 'Failed to close position');
+      setActionNotice({ type: 'success', text: `Close signal dispatched for Position #${ticket} (${symbol}).` });
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      setActionNotice({ type: 'error', text: err.message || 'Error closing position' });
+    } finally {
+      setActionLoading(prev => ({ ...prev, [ticket]: false }));
+    }
+  };
+
+  const handleCloseAllPositions = async () => {
+    if (!window.confirm(`EMERGENCY: Close ALL ${positions.length} open position(s) on Account ${account.login}?`)) return;
+    setActionLoading(prev => ({ ...prev, all_positions: true }));
+    setActionNotice(null);
+    try {
+      const res = await closeAllPositions(account.login);
+      if (!res.success) throw new Error(res.message || 'Failed to close all positions');
+      setActionNotice({ type: 'success', text: `Close-all signal dispatched for Account ${account.login}.` });
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      setActionNotice({ type: 'error', text: err.message || 'Error closing positions' });
+    } finally {
+      setActionLoading(prev => ({ ...prev, all_positions: false }));
+    }
+  };
+
+  const handleCancelOrder = async (ticket, symbol) => {
+    if (!window.confirm(`Cancel pending order #${ticket} (${symbol}) on Account ${account.login}?`)) return;
+    setActionLoading(prev => ({ ...prev, [ticket]: true }));
+    setActionNotice(null);
+    try {
+      const res = await cancelPendingOrder(account.login, ticket);
+      if (!res.success) throw new Error(res.message || 'Failed to cancel order');
+      setActionNotice({ type: 'success', text: `Cancel signal dispatched for Order #${ticket}.` });
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      setActionNotice({ type: 'error', text: err.message || 'Error canceling order' });
+    } finally {
+      setActionLoading(prev => ({ ...prev, [ticket]: false }));
+    }
+  };
+
+  const handleCancelAllOrders = async () => {
+    if (!window.confirm(`Cancel ALL ${pendingOrders.length} pending order(s) on Account ${account.login}?`)) return;
+    setActionLoading(prev => ({ ...prev, all_orders: true }));
+    setActionNotice(null);
+    try {
+      const res = await cancelAllPendingOrders(account.login);
+      if (!res.success) throw new Error(res.message || 'Failed to cancel all orders');
+      setActionNotice({ type: 'success', text: `Cancel-all signal dispatched for Account ${account.login}.` });
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      setActionNotice({ type: 'error', text: err.message || 'Error canceling orders' });
+    } finally {
+      setActionLoading(prev => ({ ...prev, all_orders: false }));
+    }
+  };
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -142,6 +209,30 @@ export default function AccountDetailModal({ account, onClose, onRefresh }) {
           })}
         </div>
 
+        {/* Action Notice Notification Banner */}
+        {actionNotice && (
+          <div style={{
+            margin: '14px 24px 0',
+            padding: '10px 14px',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: '0.82rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: actionNotice.type === 'error' ? 'rgba(244, 63, 94, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+            border: actionNotice.type === 'error' ? '1px solid rgba(244, 63, 94, 0.35)' : '1px solid rgba(16, 185, 129, 0.35)',
+            color: actionNotice.type === 'error' ? '#fb7185' : '#34d399'
+          }}>
+            <span>{actionNotice.text}</span>
+            <button
+              onClick={() => setActionNotice(null)}
+              style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: '1rem', lineHeight: 1, padding: '0 4px' }}
+            >
+              ×
+            </button>
+          </div>
+        )}
+
         {/* Tab Body */}
         <div style={{ padding: '20px 24px' }}>
           {activeTab === 'positions' && (
@@ -151,61 +242,140 @@ export default function AccountDetailModal({ account, onClose, onRefresh }) {
                   No open orders on this terminal.
                 </div>
               ) : (
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
-                    <thead>
-                      <tr style={{ color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-subtle)', textAlign: 'left', textTransform: 'uppercase', fontSize: '0.72rem', letterSpacing: '0.04em' }}>
-                        <th style={{ padding: '8px 10px' }}>Ticket</th>
-                        <th style={{ padding: '8px 10px' }}>Symbol</th>
-                        <th style={{ padding: '8px 10px' }}>Type</th>
-                        <th style={{ padding: '8px 10px' }}>Volume</th>
-                        <th style={{ padding: '8px 10px' }}>Open Price</th>
-                        <th style={{ padding: '8px 10px' }}>Current</th>
-                        <th style={{ padding: '8px 10px' }}>S/L - T/P</th>
-                        <th style={{ padding: '8px 10px', textAlign: 'right' }}>Profit ($)</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {positions.map(p => {
-                        const isBuy = p.type === 'BUY';
-                        const posProfit = p.profit || 0;
-                        const isPosProfit = posProfit >= 0;
-                        return (
-                          <tr key={p.ticket} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.03)' }}>
-                            <td className="font-mono" style={{ padding: '10px', color: 'var(--text-muted)' }}>#{p.ticket}</td>
-                            <td className="font-mono" style={{ padding: '10px', fontWeight: '700', color: '#ffffff' }}>{p.symbol}</td>
-                            <td style={{ padding: '10px' }}>
-                              <span style={{
-                                padding: '2px 6px',
-                                borderRadius: '4px',
-                                fontSize: '0.72rem',
+                <div>
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: '14px',
+                    paddingBottom: '10px',
+                    borderBottom: '1px solid var(--border-subtle)'
+                  }}>
+                    <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: '600' }}>
+                      {positions.length} Active Market Position{positions.length > 1 ? 's' : ''}
+                    </span>
+                    <button
+                      onClick={handleCloseAllPositions}
+                      disabled={actionLoading.all_positions}
+                      className="btn btn-sm"
+                      style={{
+                        background: 'rgba(244, 63, 94, 0.15)',
+                        border: '1px solid rgba(244, 63, 94, 0.4)',
+                        color: '#fb7185',
+                        padding: '5px 12px',
+                        fontSize: '0.78rem',
+                        fontWeight: '700',
+                        borderRadius: 'var(--radius-sm)',
+                        cursor: actionLoading.all_positions ? 'not-allowed' : 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}
+                      title="Emergency Close All Open Positions on this Account"
+                    >
+                      {actionLoading.all_positions ? (
+                        <>
+                          <Loader2 size={13} className="animate-spin" />
+                          <span>Closing All...</span>
+                        </>
+                      ) : (
+                        <>
+                          <XCircle size={13} />
+                          <span>Close All Positions</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+                      <thead>
+                        <tr style={{ color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-subtle)', textAlign: 'left', textTransform: 'uppercase', fontSize: '0.72rem', letterSpacing: '0.04em' }}>
+                          <th style={{ padding: '8px 10px' }}>Ticket</th>
+                          <th style={{ padding: '8px 10px' }}>Symbol</th>
+                          <th style={{ padding: '8px 10px' }}>Type</th>
+                          <th style={{ padding: '8px 10px' }}>Volume</th>
+                          <th style={{ padding: '8px 10px' }}>Open Price</th>
+                          <th style={{ padding: '8px 10px' }}>Current</th>
+                          <th style={{ padding: '8px 10px' }}>S/L - T/P</th>
+                          <th style={{ padding: '8px 10px', textAlign: 'right' }}>Profit ($)</th>
+                          <th style={{ padding: '8px 10px', textAlign: 'center', width: '90px' }}>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {positions.map(p => {
+                          const isBuy = p.type === 'BUY';
+                          const posProfit = p.profit || 0;
+                          const isPosProfit = posProfit >= 0;
+                          const isClosing = Boolean(actionLoading[p.ticket]);
+                          return (
+                            <tr key={p.ticket} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.03)' }}>
+                              <td className="font-mono" style={{ padding: '10px', color: 'var(--text-muted)' }}>#{p.ticket}</td>
+                              <td className="font-mono" style={{ padding: '10px', fontWeight: '700', color: '#ffffff' }}>{p.symbol}</td>
+                              <td style={{ padding: '10px' }}>
+                                <span style={{
+                                  padding: '2px 6px',
+                                  borderRadius: '4px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: '700',
+                                  background: isBuy ? 'rgba(16, 185, 129, 0.15)' : 'rgba(244, 63, 94, 0.15)',
+                                  color: isBuy ? '#34d399' : '#fb7185',
+                                  border: isBuy ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(244, 63, 94, 0.3)'
+                                }}>
+                                  {p.type}
+                                </span>
+                              </td>
+                              <td className="font-mono" style={{ padding: '10px' }}>{p.volume}</td>
+                              <td className="font-mono" style={{ padding: '10px' }}>{p.price_open}</td>
+                              <td className="font-mono" style={{ padding: '10px' }}>{p.price_current}</td>
+                              <td className="font-mono" style={{ padding: '10px', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                                {p.sl || '-'} / {p.tp || '-'}
+                              </td>
+                              <td className="font-mono" style={{
+                                padding: '10px',
+                                textAlign: 'right',
                                 fontWeight: '700',
-                                background: isBuy ? 'rgba(16, 185, 129, 0.15)' : 'rgba(244, 63, 94, 0.15)',
-                                color: isBuy ? '#34d399' : '#fb7185',
-                                border: isBuy ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(244, 63, 94, 0.3)'
+                                color: isPosProfit ? '#34d399' : '#fb7185'
                               }}>
-                                {p.type}
-                              </span>
-                            </td>
-                            <td className="font-mono" style={{ padding: '10px' }}>{p.volume}</td>
-                            <td className="font-mono" style={{ padding: '10px' }}>{p.price_open}</td>
-                            <td className="font-mono" style={{ padding: '10px' }}>{p.price_current}</td>
-                            <td className="font-mono" style={{ padding: '10px', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                              {p.sl || '-'} / {p.tp || '-'}
-                            </td>
-                            <td className="font-mono" style={{
-                              padding: '10px',
-                              textAlign: 'right',
-                              fontWeight: '700',
-                              color: isPosProfit ? '#34d399' : '#fb7185'
-                            }}>
-                              {isPosProfit ? '+' : ''}${posProfit.toFixed(2)}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                                {isPosProfit ? '+' : ''}${posProfit.toFixed(2)}
+                              </td>
+                              <td style={{ padding: '10px', textAlign: 'center' }}>
+                                <button
+                                  onClick={() => handleClosePosition(p.ticket, p.symbol)}
+                                  disabled={isClosing}
+                                  className="btn btn-sm"
+                                  style={{
+                                    padding: '3px 8px',
+                                    fontSize: '0.72rem',
+                                    fontWeight: '700',
+                                    background: 'rgba(244, 63, 94, 0.12)',
+                                    color: '#fb7185',
+                                    border: '1px solid rgba(244, 63, 94, 0.35)',
+                                    borderRadius: 'var(--radius-sm)',
+                                    cursor: isClosing ? 'not-allowed' : 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    transition: 'all 0.15s ease'
+                                  }}
+                                  title={`Close Position #${p.ticket}`}
+                                >
+                                  {isClosing ? (
+                                    <>
+                                      <Loader2 size={11} className="animate-spin" />
+                                      <span>Closing...</span>
+                                    </>
+                                  ) : (
+                                    <span>Close</span>
+                                  )}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </div>
@@ -218,54 +388,133 @@ export default function AccountDetailModal({ account, onClose, onRefresh }) {
                   No pending orders on this terminal.
                 </div>
               ) : (
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
-                    <thead>
-                      <tr style={{ color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-subtle)', textAlign: 'left', textTransform: 'uppercase', fontSize: '0.72rem', letterSpacing: '0.04em' }}>
-                        <th style={{ padding: '8px 10px' }}>Ticket</th>
-                        <th style={{ padding: '8px 10px' }}>Symbol</th>
-                        <th style={{ padding: '8px 10px' }}>Type</th>
-                        <th style={{ padding: '8px 10px' }}>Volume</th>
-                        <th style={{ padding: '8px 10px' }}>Trigger Price</th>
-                        <th style={{ padding: '8px 10px' }}>Current</th>
-                        <th style={{ padding: '8px 10px' }}>S/L - T/P</th>
-                        <th style={{ padding: '8px 10px' }}>Comment</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pendingOrders.map(o => {
-                        const isBuy = String(o.type).includes('BUY');
-                        return (
-                          <tr key={o.ticket} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.03)' }}>
-                            <td className="font-mono" style={{ padding: '10px', color: 'var(--text-muted)' }}>#{o.ticket}</td>
-                            <td className="font-mono" style={{ padding: '10px', fontWeight: '700', color: '#ffffff' }}>{o.symbol}</td>
-                            <td style={{ padding: '10px' }}>
-                              <span style={{
-                                padding: '2px 6px',
-                                borderRadius: '4px',
-                                fontSize: '0.72rem',
-                                fontWeight: '700',
-                                background: isBuy ? 'rgba(99, 102, 241, 0.15)' : 'rgba(244, 63, 94, 0.15)',
-                                color: isBuy ? '#c7d2fe' : '#fb7185',
-                                border: isBuy ? '1px solid rgba(99, 102, 241, 0.3)' : '1px solid rgba(244, 63, 94, 0.3)'
-                              }}>
-                                {o.type}
-                              </span>
-                            </td>
-                            <td className="font-mono" style={{ padding: '10px' }}>{o.volume}</td>
-                            <td className="font-mono" style={{ padding: '10px', fontWeight: '600' }}>{o.price_open}</td>
-                            <td className="font-mono" style={{ padding: '10px' }}>{o.price_current || '-'}</td>
-                            <td className="font-mono" style={{ padding: '10px', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                              {o.sl || '-'} / {o.tp || '-'}
-                            </td>
-                            <td className="font-mono" style={{ padding: '10px', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                              {o.comment || '-'}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                <div>
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: '14px',
+                    paddingBottom: '10px',
+                    borderBottom: '1px solid var(--border-subtle)'
+                  }}>
+                    <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: '600' }}>
+                      {pendingOrders.length} Pending Order{pendingOrders.length > 1 ? 's' : ''}
+                    </span>
+                    <button
+                      onClick={handleCancelAllOrders}
+                      disabled={actionLoading.all_orders}
+                      className="btn btn-sm"
+                      style={{
+                        background: 'rgba(245, 158, 11, 0.15)',
+                        border: '1px solid rgba(245, 158, 11, 0.4)',
+                        color: '#fbbf24',
+                        padding: '5px 12px',
+                        fontSize: '0.78rem',
+                        fontWeight: '700',
+                        borderRadius: 'var(--radius-sm)',
+                        cursor: actionLoading.all_orders ? 'not-allowed' : 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}
+                      title="Cancel All Pending Orders on this Account"
+                    >
+                      {actionLoading.all_orders ? (
+                        <>
+                          <Loader2 size={13} className="animate-spin" />
+                          <span>Canceling All...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Clock size={13} />
+                          <span>Cancel All Orders</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+                      <thead>
+                        <tr style={{ color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-subtle)', textAlign: 'left', textTransform: 'uppercase', fontSize: '0.72rem', letterSpacing: '0.04em' }}>
+                          <th style={{ padding: '8px 10px' }}>Ticket</th>
+                          <th style={{ padding: '8px 10px' }}>Symbol</th>
+                          <th style={{ padding: '8px 10px' }}>Type</th>
+                          <th style={{ padding: '8px 10px' }}>Volume</th>
+                          <th style={{ padding: '8px 10px' }}>Trigger Price</th>
+                          <th style={{ padding: '8px 10px' }}>Current</th>
+                          <th style={{ padding: '8px 10px' }}>S/L - T/P</th>
+                          <th style={{ padding: '8px 10px' }}>Comment</th>
+                          <th style={{ padding: '8px 10px', textAlign: 'center', width: '90px' }}>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pendingOrders.map(o => {
+                          const isBuy = String(o.type).includes('BUY');
+                          const isCanceling = Boolean(actionLoading[o.ticket]);
+                          return (
+                            <tr key={o.ticket} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.03)' }}>
+                              <td className="font-mono" style={{ padding: '10px', color: 'var(--text-muted)' }}>#{o.ticket}</td>
+                              <td className="font-mono" style={{ padding: '10px', fontWeight: '700', color: '#ffffff' }}>{o.symbol}</td>
+                              <td style={{ padding: '10px' }}>
+                                <span style={{
+                                  padding: '2px 6px',
+                                  borderRadius: '4px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: '700',
+                                  background: isBuy ? 'rgba(99, 102, 241, 0.15)' : 'rgba(244, 63, 94, 0.15)',
+                                  color: isBuy ? '#c7d2fe' : '#fb7185',
+                                  border: isBuy ? '1px solid rgba(99, 102, 241, 0.3)' : '1px solid rgba(244, 63, 94, 0.3)'
+                                }}>
+                                  {o.type}
+                                </span>
+                              </td>
+                              <td className="font-mono" style={{ padding: '10px' }}>{o.volume}</td>
+                              <td className="font-mono" style={{ padding: '10px', fontWeight: '600' }}>{o.price_open}</td>
+                              <td className="font-mono" style={{ padding: '10px' }}>{o.price_current || '-'}</td>
+                              <td className="font-mono" style={{ padding: '10px', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                                {o.sl || '-'} / {o.tp || '-'}
+                              </td>
+                              <td className="font-mono" style={{ padding: '10px', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                                {o.comment || '-'}
+                              </td>
+                              <td style={{ padding: '10px', textAlign: 'center' }}>
+                                <button
+                                  onClick={() => handleCancelOrder(o.ticket, o.symbol)}
+                                  disabled={isCanceling}
+                                  className="btn btn-sm"
+                                  style={{
+                                    padding: '3px 8px',
+                                    fontSize: '0.72rem',
+                                    fontWeight: '700',
+                                    background: 'rgba(245, 158, 11, 0.12)',
+                                    color: '#fbbf24',
+                                    border: '1px solid rgba(245, 158, 11, 0.35)',
+                                    borderRadius: 'var(--radius-sm)',
+                                    cursor: isCanceling ? 'not-allowed' : 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    transition: 'all 0.15s ease'
+                                  }}
+                                  title={`Cancel Order #${o.ticket}`}
+                                >
+                                  {isCanceling ? (
+                                    <>
+                                      <Loader2 size={11} className="animate-spin" />
+                                      <span>Canceling...</span>
+                                    </>
+                                  ) : (
+                                    <span>Cancel</span>
+                                  )}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </div>

@@ -4,7 +4,8 @@ from typing import Optional, List, Dict, Any
 from .schemas import AccountCreate, AccountUpdate, AccountBulkCreate, AccountBatchAction
 from .db import (
     get_all_accounts, get_account_by_login, create_account, create_accounts_bulk,
-    update_account, delete_account, set_account_status, batch_account_action, add_log
+    update_account, delete_account, set_account_status, batch_account_action, add_log,
+    enqueue_node_command
 )
 
 router = APIRouter(prefix="/api/accounts", tags=["Accounts"])
@@ -151,7 +152,7 @@ def add_accounts_bulk(payload: AccountBulkCreate):
 def perform_batch_action(payload: AccountBatchAction):
     if not payload.logins:
         raise HTTPException(status_code=400, detail="No accounts specified.")
-    valid_actions = ["start", "stop", "restart", "delete", "assign_node"]
+    valid_actions = ["start", "stop", "restart", "delete", "assign_node", "close_all_positions", "cancel_all_orders"]
     if payload.action not in valid_actions:
         raise HTTPException(status_code=400, detail=f"Invalid action. Supported: {valid_actions}")
 
@@ -238,4 +239,105 @@ def restart_account(login: int):
         "success": True,
         "message": f"Restart command sent for Account {login}.",
         "account": updated
+    }
+
+@router.post("/{login}/positions/{ticket}/close")
+def close_account_position(login: int, ticket: int):
+    acc = get_account_by_login(login)
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+    node_id = acc.get("assigned_node_id")
+    if not node_id:
+        raise HTTPException(status_code=400, detail="Account is not currently assigned to an online worker node.")
+    
+    positions = acc.get("open_positions", [])
+    pos = next((p for p in positions if int(p.get("ticket", 0)) == int(ticket)), None)
+    symbol = pos.get("symbol", "") if pos else ""
+    
+    cmd_id = enqueue_node_command(
+        node_id=node_id,
+        login=login,
+        action="CLOSE",
+        payload={
+            "action": "CLOSE",
+            "ticket": ticket,
+            "slave_ticket": ticket,
+            "symbol": symbol
+        }
+    )
+    add_log(f"Manual CLOSE requested from dashboard for Account {login}, Ticket #{ticket} ({symbol}).", source="DASHBOARD")
+    return {
+        "success": True,
+        "message": f"Close command dispatched for Position #{ticket}.",
+        "cmd_id": cmd_id
+    }
+
+@router.post("/{login}/positions/close-all")
+def close_all_account_positions(login: int):
+    acc = get_account_by_login(login)
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+    node_id = acc.get("assigned_node_id")
+    if not node_id:
+        raise HTTPException(status_code=400, detail="Account is not currently assigned to an online worker node.")
+    
+    cmd_id = enqueue_node_command(
+        node_id=node_id,
+        login=login,
+        action="CLOSE_ALL",
+        payload={"action": "CLOSE_ALL"}
+    )
+    add_log(f"Emergency CLOSE ALL positions requested from dashboard for Account {login}.", source="DASHBOARD", level="WARNING")
+    return {
+        "success": True,
+        "message": f"Close-all positions command dispatched for Account {login}.",
+        "cmd_id": cmd_id
+    }
+
+@router.post("/{login}/orders/{ticket}/cancel")
+def cancel_account_order(login: int, ticket: int):
+    acc = get_account_by_login(login)
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+    node_id = acc.get("assigned_node_id")
+    if not node_id:
+        raise HTTPException(status_code=400, detail="Account is not currently assigned to an online worker node.")
+    
+    cmd_id = enqueue_node_command(
+        node_id=node_id,
+        login=login,
+        action="CANCEL_PENDING",
+        payload={
+            "action": "CANCEL_PENDING",
+            "ticket": ticket,
+            "slave_ticket": ticket
+        }
+    )
+    add_log(f"Manual CANCEL requested from dashboard for Pending Order #{ticket} (Account {login}).", source="DASHBOARD")
+    return {
+        "success": True,
+        "message": f"Cancel command dispatched for Order #{ticket}.",
+        "cmd_id": cmd_id
+    }
+
+@router.post("/{login}/orders/cancel-all")
+def cancel_all_account_orders(login: int):
+    acc = get_account_by_login(login)
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+    node_id = acc.get("assigned_node_id")
+    if not node_id:
+        raise HTTPException(status_code=400, detail="Account is not currently assigned to an online worker node.")
+    
+    cmd_id = enqueue_node_command(
+        node_id=node_id,
+        login=login,
+        action="CANCEL_ALL_PENDING",
+        payload={"action": "CANCEL_ALL_PENDING"}
+    )
+    add_log(f"Emergency CANCEL ALL pending orders requested from dashboard for Account {login}.", source="DASHBOARD", level="WARNING")
+    return {
+        "success": True,
+        "message": f"Cancel-all orders command dispatched for Account {login}.",
+        "cmd_id": cmd_id
     }
