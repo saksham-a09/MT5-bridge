@@ -5,8 +5,9 @@ from .schemas import NodeRegister, NodeHeartbeat, BatchTelemetry
 from .db import (
     get_all_nodes, get_node_by_id, register_node, delete_node,
     update_node_heartbeat, get_assigned_accounts_for_node,
-    update_account_telemetry, add_log, get_pending_node_commands,
-    complete_node_command
+    update_account_telemetry, update_accounts_telemetry_batch,
+    add_log, get_pending_node_commands, complete_node_command,
+    batch_complete_node_commands
 )
 from .config import settings
 from .copier_engine import copier_engine
@@ -98,10 +99,8 @@ def submit_node_telemetry(node_id: str, payload: BatchTelemetry, x_node_api_key:
     if x_node_api_key and node["api_key"] and x_node_api_key != node["api_key"]:
         raise HTTPException(status_code=401, detail="Invalid node API key")
 
-    count = 0
-    for term in payload.terminals:
-        update_account_telemetry(term.login, term.model_dump())
-        count += 1
+    count = len(payload.terminals)
+    update_accounts_telemetry_batch(payload.terminals)
 
     # Trigger fast copier synchronization immediately upon receiving telemetry
     try:
@@ -134,9 +133,37 @@ def get_node_commands(node_id: str, x_node_api_key: Optional[str] = Header(None)
         "commands": commands
     }
 
+@router.post("/{node_id}/commands/batch-results")
+def submit_batch_command_results(node_id: str, payload: dict, x_node_api_key: Optional[str] = Header(None)):
+    """Atomically records execution results for multiple trade commands returned from this node."""
+    node = get_node_by_id(node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail=f"Worker Node '{node_id}' not found.")
+    if x_node_api_key and node["api_key"] and x_node_api_key != node["api_key"]:
+        raise HTTPException(status_code=401, detail="Invalid node API key")
+
+    results = payload.get("results", [])
+    if not results:
+        return {"success": True, "recorded_count": 0}
+
+    # 1. Atomic batch update in DB
+    batch_complete_node_commands(results)
+
+    # 2. Feed results into copier engine state
+    for r in results:
+        cmd_id = r.get("cmd_id") or r.get("id")
+        data = r.get("data") if "data" in r else r
+        if cmd_id:
+            try:
+                copier_engine.handle_command_result(cmd_id, data)
+            except Exception:
+                pass
+
+    return {"success": True, "recorded_count": len(results)}
+
 @router.post("/{node_id}/commands/{cmd_id}/result")
 def submit_command_result(node_id: str, cmd_id: str, payload: dict, x_node_api_key: Optional[str] = Header(None)):
-    """Reports execution result (ticket, price, retcode) for a trade command back to Hub."""
+    """Reports execution result (ticket, price, retcode) for a single trade command back to Hub."""
     node = get_node_by_id(node_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"Worker Node '{node_id}' not found.")

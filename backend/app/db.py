@@ -47,6 +47,8 @@ def get_db():
         conn = sqlite3.connect(settings.DATABASE_PATH, timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        conn.execute("PRAGMA temp_store = MEMORY;")
         conn.execute("PRAGMA busy_timeout = 30000;")
         try:
             yield conn
@@ -701,6 +703,70 @@ def update_account_telemetry(login: int, data: Dict[str, Any]):
             now
         ))
 
+def update_accounts_telemetry_batch(telemetries: List[Any]):
+    """Atomic batch update of telemetry for multiple accounts in a single database transaction."""
+    if not telemetries:
+        return
+    now = get_iso_now()
+    batch_params = []
+    for item in telemetries:
+        data = item.model_dump() if hasattr(item, "model_dump") else (item.dict() if hasattr(item, "dict") else item)
+        login = data.get("login")
+        if not login:
+            continue
+        batch_params.append((
+            int(login),
+            1 if data.get("is_connected") else 0,
+            data.get("broker_name", ""),
+            data.get("server", ""),
+            data.get("currency", "USD"),
+            data.get("leverage", 100),
+            float(data.get("balance", 0.0)),
+            float(data.get("equity", 0.0)),
+            float(data.get("profit", 0.0)),
+            float(data.get("daily_closed_pnl", 0.0)),
+            float(data.get("margin", 0.0)),
+            float(data.get("margin_free", 0.0)),
+            float(data.get("margin_level", 0.0)),
+            int(data.get("ping", 0)),
+            json.dumps(data.get("open_positions", [])),
+            json.dumps(data.get("pending_orders", [])),
+            json.dumps(data.get("deals_history", [])),
+            data.get("error_message", ""),
+            now
+        ))
+
+    if not batch_params:
+        return
+
+    with get_db() as conn:
+        conn.executemany("""
+        INSERT INTO account_telemetry (
+            login, is_connected, broker_name, server, currency, leverage,
+            balance, equity, profit, daily_closed_pnl, margin, margin_free, margin_level,
+            ping, open_positions, pending_orders, deals_history, error_message, last_sync
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(login) DO UPDATE SET
+            is_connected = excluded.is_connected,
+            broker_name = excluded.broker_name,
+            server = excluded.server,
+            currency = excluded.currency,
+            leverage = excluded.leverage,
+            balance = excluded.balance,
+            equity = excluded.equity,
+            profit = excluded.profit,
+            daily_closed_pnl = excluded.daily_closed_pnl,
+            margin = excluded.margin,
+            margin_free = excluded.margin_free,
+            margin_level = excluded.margin_level,
+            ping = excluded.ping,
+            open_positions = excluded.open_positions,
+            pending_orders = excluded.pending_orders,
+            deals_history = excluded.deals_history,
+            error_message = excluded.error_message,
+            last_sync = excluded.last_sync
+        """, batch_params)
+
 def get_assigned_accounts_for_node(node_id: str) -> List[Dict[str, Any]]:
     """Returns all accounts assigned to run on this node with their credentials and master/slave role."""
     with get_db() as conn:
@@ -1115,13 +1181,17 @@ def record_copied_trade(group_id: int, master_login: int, slave_login: int, mast
         )
         return trade_id
 
-def update_copied_trade(master_ticket: int, slave_login: int, **fields):
+def update_copied_trade(master_ticket: int, slave_login: Optional[int] = None, **fields):
     if not fields:
         return
     set_clause = ", ".join([f"{k} = ?" for k in fields.keys()])
-    values = list(fields.values()) + [master_ticket, slave_login]
     with get_db() as conn:
-        conn.execute(f"UPDATE copied_trades SET {set_clause} WHERE master_ticket = ? AND slave_login = ?", values)
+        if slave_login is not None:
+            values = list(fields.values()) + [master_ticket, slave_login]
+            conn.execute(f"UPDATE copied_trades SET {set_clause} WHERE master_ticket = ? AND slave_login = ?", values)
+        else:
+            values = list(fields.values()) + [master_ticket]
+            conn.execute(f"UPDATE copied_trades SET {set_clause} WHERE master_ticket = ?", values)
 
 def get_copied_trades(group_id: Optional[int] = None, limit: int = 100) -> List[Dict[str, Any]]:
     with get_db() as conn:
@@ -1147,6 +1217,23 @@ def get_active_copied_trade(master_ticket: int, slave_login: int) -> Optional[Di
         WHERE master_ticket = ? AND slave_login = ? AND status IN ('open', 'pending')
         ORDER BY id DESC LIMIT 1
         """, (master_ticket, slave_login))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+def get_copied_trade_by_slave_ticket(slave_ticket: int, slave_login: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    with get_db() as conn:
+        if slave_login is not None:
+            cursor = conn.execute("""
+            SELECT * FROM copied_trades
+            WHERE slave_ticket = ? AND slave_login = ?
+            ORDER BY id DESC LIMIT 1
+            """, (slave_ticket, slave_login))
+        else:
+            cursor = conn.execute("""
+            SELECT * FROM copied_trades
+            WHERE slave_ticket = ?
+            ORDER BY id DESC LIMIT 1
+            """, (slave_ticket,))
         row = cursor.fetchone()
         return dict(row) if row else None
 
@@ -1205,4 +1292,41 @@ def complete_node_command(cmd_id: str, status: str, result: Dict[str, Any]):
         SET status = ?, result = ?, completed_at = ?
         WHERE id = ?
         """, (status, json.dumps(result), now, cmd_id))
+
+def batch_complete_node_commands(results: List[Dict[str, Any]]):
+    """Completes multiple commands in a single atomic database transaction."""
+    if not results:
+        return
+    now = get_iso_now()
+    params = []
+    for r in results:
+        cmd_id = r.get("cmd_id") or r.get("id")
+        if not cmd_id:
+            continue
+        status = r.get("status", "success")
+        data = r.get("data") if "data" in r else r
+        params.append((status, json.dumps(data), now, cmd_id))
+
+    if not params:
+        return
+
+    with get_db() as conn:
+        conn.executemany("""
+        UPDATE copy_node_commands
+        SET status = ?, result = ?, completed_at = ?
+        WHERE id = ?
+        """, params)
+
+def get_node_command_by_id(cmd_id: str) -> Optional[Dict[str, Any]]:
+    with get_db() as conn:
+        cursor = conn.execute("SELECT * FROM copy_node_commands WHERE id = ?", (cmd_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["payload"] = json.loads(d["payload"])
+        except Exception:
+            pass
+        return d
 

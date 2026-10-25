@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from .db import (
     get_all_copy_groups, get_account_by_login, enqueue_node_command,
     record_copied_trade, update_copied_trade, get_active_copied_trade,
-    get_open_copied_trades, add_log
+    get_open_copied_trades, add_log, get_node_command_by_id,
+    get_copied_trade_by_slave_ticket, get_db
 )
 
 logger = logging.getLogger("TradeCopierEngine")
@@ -103,6 +104,9 @@ class TradeCopierEngine:
                     if s.get("status") != "active":
                         continue
                     slave_login = s["slave_login"]
+                    slave_acc = get_account_by_login(slave_login)
+                    if not slave_acc or slave_acc.get("status") != "active":
+                        continue
                     self._dispatch_close(group_id, master_login, slave_login, old_ticket, old_pos)
 
         # 1B. Reconcile any open trades in DB whose master position is closed
@@ -112,25 +116,44 @@ class TradeCopierEngine:
             s_login = tr["slave_login"]
             if m_ticket not in curr_master_pos_map:
                 slave_acc = get_account_by_login(s_login)
+                if not slave_acc or slave_acc.get("status") != "active":
+                    continue
                 s_positions = slave_acc.get("open_positions", []) if slave_acc else []
                 s_ticket = tr.get("slave_ticket")
                 slave_has_it = any(int(p.get("ticket", 0)) == s_ticket for p in s_positions) if s_ticket else False
-                if slave_has_it:
-                    self._dispatch_close(group_id, master_login, s_login, m_ticket, tr)
-                else:
-                    now_iso = datetime.now(timezone.utc).isoformat()
-                    s_profit = tr.get("slave_profit", 0.0)
-                    m_profit = tr.get("master_profit", 0.0)
-                    if slave_acc:
-                        for d in slave_acc.get("deals_history", []):
-                            if d.get("ticket") == s_ticket or str(m_ticket) in str(d.get("comment", "")):
-                                s_profit = float(d.get("profit", 0.0))
-                                break
-                    if master_acc:
-                        for d in master_acc.get("deals_history", []):
-                            if d.get("ticket") == m_ticket:
-                                m_profit = float(d.get("profit", 0.0))
-                                break
+
+                # Dispatch close command if master position is closed and not throttled
+                if slave_has_it or s_ticket:
+                    self._dispatch_close(group_id, master_login, s_login, m_ticket, tr, slave_ticket=s_ticket)
+
+                # Check deals history to see if slave position actually closed
+                found_deal = False
+                now_iso = datetime.now(timezone.utc).isoformat()
+                s_profit = tr.get("slave_profit", 0.0)
+                m_profit = tr.get("master_profit", 0.0)
+                if slave_acc:
+                    for d in slave_acc.get("deals_history", []):
+                        if (s_ticket and d.get("ticket") == s_ticket) or (str(m_ticket) in str(d.get("comment", ""))):
+                            s_profit = float(d.get("profit", 0.0))
+                            found_deal = True
+                            break
+                if master_acc:
+                    for d in master_acc.get("deals_history", []):
+                        if d.get("ticket") == m_ticket:
+                            m_profit = float(d.get("profit", 0.0))
+                            break
+
+                # Prevent race condition: DO NOT mark trade closed immediately after opening
+                # if slave telemetry simply hasn't caught up yet!
+                now_dt = datetime.now(timezone.utc)
+                opened_dt = None
+                try:
+                    opened_dt = datetime.fromisoformat(tr.get("opened_at", "").replace("Z", "+00:00"))
+                except Exception:
+                    pass
+                age_sec = (now_dt - opened_dt).total_seconds() if opened_dt else 999.0
+
+                if found_deal or (not slave_has_it and age_sec > 8.0):
                     update_copied_trade(
                         master_ticket=m_ticket,
                         slave_login=s_login,
@@ -139,6 +162,81 @@ class TradeCopierEngine:
                         slave_profit=s_profit,
                         master_profit=m_profit
                     )
+                    self.ticket_mappings.pop((m_ticket, s_login), None)
+                    self.pending_ticket_mappings.pop((m_ticket, s_login), None)
+
+        # 1C. Stray / Orphan Position Sweep:
+        # Check active slaves for ANY open positions that were copied from this master (tagged C:<master_ticket> or in DB),
+        # where the master position is NO LONGER open on the master terminal!
+        for s in slaves:
+            if s.get("status") != "active":
+                continue
+            s_login = s["slave_login"]
+            slave_acc = get_account_by_login(s_login)
+            if not slave_acc or slave_acc.get("status") != "active":
+                continue
+            s_positions = slave_acc.get("open_positions", [])
+            for sp in s_positions:
+                sp_ticket = int(sp.get("ticket", 0))
+                comment = str(sp.get("comment", "")).strip()
+                m_ticket = None
+
+                # Check comment for C:<ticket>
+                if "C:" in comment:
+                    try:
+                        c_part = comment.split("C:")[1].strip()
+                        m_ticket = int(c_part.split()[0].split(";")[0].split(",")[0])
+                    except (ValueError, IndexError):
+                        pass
+
+                # If not found in comment, check in-memory ticket mappings
+                if not m_ticket:
+                    for (m_k, sl_k), sv_k in self.ticket_mappings.items():
+                        if sl_k == s_login and sv_k == sp_ticket:
+                            m_ticket = m_k
+                            break
+
+                # If still not found, check DB copied_trades
+                if not m_ticket:
+                    tr_rec = get_copied_trade_by_slave_ticket(sp_ticket, s_login)
+                    if tr_rec:
+                        m_ticket = tr_rec.get("master_ticket")
+
+                # If this position is linked to a master ticket, and the master ticket is CLOSED on the master
+                if m_ticket and m_ticket not in curr_master_pos_map:
+                    close_key = (m_ticket, s_login)
+                    stray_key = (m_ticket, s_login, sp_ticket)
+                    now_ts = time.time()
+                    # Do not duplicate if close was already dispatched via Step 1 / 1B or stray within 6s
+                    if (close_key in self.action_timestamps and (now_ts - self.action_timestamps[close_key]) < 6.0) or \
+                       (stray_key in self.action_timestamps and (now_ts - self.action_timestamps[stray_key]) < 6.0):
+                        continue
+                    self.action_timestamps[close_key] = now_ts
+                    self.action_timestamps[stray_key] = now_ts
+                    node_id = slave_acc.get("assigned_node_id")
+                    if node_id:
+                        logger.warning(
+                            f"STRAY POSITION DETECTED: Slave {s_login} Pos #{sp_ticket} ({sp.get('symbol')}) "
+                            f"copied from closed Master #{m_ticket}. Auto-closing stray trade..."
+                        )
+                        add_log(
+                            f"Stray position #{sp_ticket} ({sp.get('symbol')}) detected on Slave {s_login} (Master #{m_ticket} closed). Dispatching auto-close...",
+                            source="COPIER",
+                            level="WARNING"
+                        )
+                        cmd_payload = {
+                            "group_id": group_id,
+                            "master_login": master_login,
+                            "slave_login": s_login,
+                            "master_ticket": m_ticket,
+                            "slave_ticket": sp_ticket,
+                            "symbol": sp.get("symbol", ""),
+                            "order_type": sp.get("type", "BUY"),
+                            "volume": float(sp.get("volume", 0.01)),
+                            "comment": f"Close Stray C:{m_ticket}",
+                            "master_profit": 0.0
+                        }
+                        enqueue_node_command(node_id, s_login, "CLOSE", cmd_payload)
 
         # 2. Process Master OPEN or MODIFIED positions -> Replicate to active slaves
         symbol_mappings = grp.get("symbol_mappings", {})
@@ -152,7 +250,7 @@ class TradeCopierEngine:
                     continue
                 slave_login = s["slave_login"]
                 slave_acc = get_account_by_login(slave_login)
-                if not slave_acc:
+                if not slave_acc or slave_acc.get("status") != "active":
                     continue
 
                 slave_positions = slave_acc.get("open_positions", [])
@@ -208,7 +306,7 @@ class TradeCopierEngine:
                         continue
                     slave_login = s["slave_login"]
                     slave_acc = get_account_by_login(slave_login)
-                    if not slave_acc:
+                    if not slave_acc or slave_acc.get("status") != "active":
                         continue
 
                     slave_orders = slave_acc.get("pending_orders", [])
@@ -238,8 +336,9 @@ class TradeCopierEngine:
         slave_positions: List[Dict[str, Any]],
         slave_orders: Optional[List[Dict[str, Any]]] = None
     ) -> Optional[int]:
-        # 1. Check in-memory ticket mapping
         key = (master_ticket, slave_login)
+
+        # 1. Check in-memory ticket mapping
         cached_slave_ticket = self.ticket_mappings.get(key)
         if cached_slave_ticket:
             for sp in slave_positions:
@@ -249,12 +348,15 @@ class TradeCopierEngine:
                 for so in slave_orders:
                     if int(so.get("ticket", 0)) == cached_slave_ticket:
                         return cached_slave_ticket
+            # If cached ticket is present, return it even if telemetry hasn't refreshed yet
+            return cached_slave_ticket
 
-        # 2. Check position comments: 'C:{master_ticket}'
+        # 2. Check position comments: 'C:{master_ticket}' or '{master_ticket}'
         match_str = f"C:{master_ticket}"
+        m_str = str(master_ticket)
         for sp in slave_positions:
             comment = str(sp.get("comment", "")).strip()
-            if match_str in comment:
+            if match_str in comment or m_str in comment:
                 ticket = int(sp["ticket"])
                 self.ticket_mappings[key] = ticket
                 return ticket
@@ -262,17 +364,28 @@ class TradeCopierEngine:
         if slave_orders:
             for so in slave_orders:
                 comment = str(so.get("comment", "")).strip()
-                if match_str in comment:
+                if match_str in comment or m_str in comment:
                     ticket = int(so["ticket"])
                     self.ticket_mappings[key] = ticket
                     return ticket
 
-        # 3. Check DB
+        # 3. Check DB for active copied trade
         db_rec = get_active_copied_trade(master_ticket, slave_login)
         if db_rec and db_rec.get("slave_ticket"):
             ticket = int(db_rec["slave_ticket"])
             self.ticket_mappings[key] = ticket
             return ticket
+
+        # 4. Check DB for ANY recent copied trade (even if status was prematurely closed)
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT slave_ticket FROM copied_trades WHERE master_ticket = ? AND slave_login = ? ORDER BY id DESC LIMIT 1",
+                (master_ticket, slave_login)
+            ).fetchone()
+            if row and row["slave_ticket"]:
+                ticket = int(row["slave_ticket"])
+                self.ticket_mappings[key] = ticket
+                return ticket
 
         return None
 
@@ -435,15 +548,16 @@ class TradeCopierEngine:
         master_login: int,
         slave_login: int,
         master_ticket: int,
-        old_m_pos: Dict[str, Any]
+        old_m_pos: Dict[str, Any],
+        slave_ticket: Optional[int] = None
     ):
         key = (master_ticket, slave_login)
         now_ts = time.time()
-        if key in self.action_timestamps and (now_ts - self.action_timestamps[key]) < 2:
+        if key in self.action_timestamps and (now_ts - self.action_timestamps[key]) < 6.0:
             return
 
         slave_acc = get_account_by_login(slave_login)
-        if not slave_acc:
+        if not slave_acc or slave_acc.get("status") != "active":
             return
 
         node_id = slave_acc.get("assigned_node_id")
@@ -451,14 +565,16 @@ class TradeCopierEngine:
             return
 
         slave_positions = slave_acc.get("open_positions", [])
-        slave_ticket = self._find_matching_slave_ticket(master_ticket, slave_login, slave_positions)
+        resolved_slave_ticket = slave_ticket or old_m_pos.get("slave_ticket")
+        if not resolved_slave_ticket:
+            resolved_slave_ticket = self._find_matching_slave_ticket(master_ticket, slave_login, slave_positions)
 
         cmd_payload = {
             "group_id": group_id,
             "master_login": master_login,
             "slave_login": slave_login,
             "master_ticket": master_ticket,
-            "slave_ticket": slave_ticket,
+            "slave_ticket": resolved_slave_ticket,
             "symbol": old_m_pos.get("symbol", ""),
             "order_type": old_m_pos.get("type", "BUY"),
             "volume": float(old_m_pos.get("volume", 0.01)),
@@ -469,7 +585,7 @@ class TradeCopierEngine:
         self.action_timestamps[key] = now_ts
         cmd_id = enqueue_node_command(node_id, slave_login, "CLOSE", cmd_payload)
         logger.info(
-            f"Enqueued CLOSE command {cmd_id} for Slave {slave_login} (Master #{master_ticket}, Slave #{slave_ticket})"
+            f"Enqueued CLOSE command {cmd_id} for Slave {slave_login} (Master #{master_ticket}, Slave #{resolved_slave_ticket})"
         )
 
     def _dispatch_place_pending(
@@ -638,11 +754,15 @@ class TradeCopierEngine:
         action = payload.get("action", "")
         data = payload.get("data", {})
 
-        group_id = data.get("group_id")
-        master_login = data.get("master_login")
-        slave_login = data.get("slave_login")
-        master_ticket = data.get("master_ticket")
-        slave_ticket = data.get("slave_ticket")
+        # Fallback to DB command record if worker omitted metadata
+        cmd_rec = get_node_command_by_id(cmd_id) if cmd_id else None
+        cmd_payload_dict = cmd_rec.get("payload", {}) if cmd_rec else {}
+
+        group_id = data.get("group_id") or cmd_payload_dict.get("group_id")
+        master_login = data.get("master_login") or cmd_payload_dict.get("master_login")
+        slave_login = data.get("slave_login") or (cmd_rec.get("login") if cmd_rec else None) or cmd_payload_dict.get("slave_login")
+        master_ticket = data.get("master_ticket") or cmd_payload_dict.get("master_ticket")
+        slave_ticket = data.get("slave_ticket") or cmd_payload_dict.get("slave_ticket")
         exec_ms = data.get("execution_ms", 0)
 
         if action == "OPEN":
@@ -725,24 +845,28 @@ class TradeCopierEngine:
             now_iso = datetime.now(timezone.utc).isoformat()
             slave_profit = float(data.get("profit", 0.0))
             master_profit = float(payload.get("master_profit", 0.0))
-            close_update_fields = {
-                "status": "closed",
-                "closed_at": now_iso,
-                "slave_profit": slave_profit
-            }
-            if master_profit != 0.0:
-                close_update_fields["master_profit"] = master_profit
 
-            update_copied_trade(
-                master_ticket=master_ticket,
-                slave_login=slave_login,
-                **close_update_fields
-            )
-            # Remove mapping
-            self.ticket_mappings.pop((master_ticket, slave_login), None)
-            self.pending_ticket_mappings.pop((master_ticket, slave_login), None)
             if status == "success":
+                close_update_fields = {
+                    "status": "closed",
+                    "closed_at": now_iso,
+                    "slave_profit": slave_profit
+                }
+                if master_profit != 0.0:
+                    close_update_fields["master_profit"] = master_profit
+
+                update_copied_trade(
+                    master_ticket=master_ticket,
+                    slave_login=slave_login,
+                    **close_update_fields
+                )
+                # Remove mapping
+                self.ticket_mappings.pop((master_ticket, slave_login), None)
+                self.pending_ticket_mappings.pop((master_ticket, slave_login), None)
                 add_log(f"Closed trade #{slave_ticket} on Slave {slave_login} (Master #{master_ticket}, Profit: ${slave_profit:.2f}).", source="COPIER")
+            else:
+                err_msg = payload.get("error", "Unknown error")
+                add_log(f"Close trade #{slave_ticket} failed on Slave {slave_login} (Master #{master_ticket}): {err_msg}", level="WARNING", source="COPIER")
 
         elif action in ("CANCEL_PENDING", "DELETE_PENDING"):
             now_iso = datetime.now(timezone.utc).isoformat()

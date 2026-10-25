@@ -370,6 +370,8 @@ class MT5Worker:
         self.cached_deals = None
         self.cached_daily_closed_pnl = 0.0
         self.urgent_telemetry_file = os.path.join(self.clone_dir, "urgent_telemetry.json")
+        self.terminal_minimized = False
+        self.symbol_preferred_filling = {}
 
         self.terminal_pid = None
         pid_file = os.path.join(self.clone_dir, "terminal.pid")
@@ -399,8 +401,9 @@ class MT5Worker:
         patch_mt5_experts_config(self.clone_dir, self.logger)
 
     def minimize_terminal_window(self):
-        """Minimizes the MT5 terminal window (SW_MINIMIZE) to disable GDI painting & WM_PAINT messages,
-        reducing terminal CPU footprint by up to 70% while keeping MQL5 and Python API at 100% speed."""
+        """Minimizes the MT5 terminal window (SW_MINIMIZE) to disable GDI painting & WM_PAINT messages."""
+        if getattr(self, "terminal_minimized", False):
+            return True
         try:
             import ctypes
             if not hasattr(ctypes, "windll") or not hasattr(ctypes.windll, "user32"):
@@ -416,9 +419,6 @@ class MT5Worker:
             if proc and proc.pid:
                 target_pids.add(proc.pid)
 
-            if not target_pids:
-                return False
-
             SW_MINIMIZE = 6
             hwnds = []
 
@@ -431,29 +431,32 @@ class MT5Worker:
                 return True
 
             WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-            user32.EnumWindows(WNDENUMPROC(enum_proc), 0)
+            if target_pids:
+                user32.EnumWindows(WNDENUMPROC(enum_proc), 0)
 
-            # Fallback by window title if no HWND found directly by PID
+            # Fallback by window title strictly matching this worker's login only
             if not hwnds:
                 login_str = str(self.login_id)
                 def enum_fallback(hwnd, lparam):
                     if user32.IsWindow(hwnd):
                         buf = ctypes.create_unicode_buffer(512)
                         user32.GetWindowTextW(hwnd, buf, 512)
-                        cbuf = ctypes.create_unicode_buffer(256)
-                        user32.GetClassNameW(hwnd, cbuf, 256)
-                        if login_str in buf.value or "MetaTrader" in buf.value or "MetaQuotes" in cbuf.value:
+                        if login_str in buf.value:
                             hwnds.append(hwnd)
                     return True
                 user32.EnumWindows(WNDENUMPROC(enum_fallback), 0)
 
             minimized_count = 0
             for h in hwnds:
+                if hasattr(user32, "IsIconic") and user32.IsIconic(h):
+                    minimized_count += 1
+                    continue
                 user32.ShowWindow(h, SW_MINIMIZE)
                 minimized_count += 1
 
             if minimized_count > 0:
-                self.logger.info(f"CPU Tuning: Minimized {minimized_count} MT5 window(s) to suppress GDI redraws (SW_MINIMIZE).")
+                self.terminal_minimized = True
+                self.logger.info(f"CPU Tuning: Minimized MT5 window for Login {self.login_id} (SW_MINIMIZE).")
                 return True
         except Exception as e:
             self.logger.debug(f"Window minimize skipped or unavailable: {e}")
@@ -1313,17 +1316,20 @@ class MT5Worker:
 
         start_time = time.time()
         action = str(cmd.get("action", "")).upper()
-        symbol = cmd.get("symbol", self.symbol)
+        symbol = cmd.get("symbol") or self.symbol
 
-        # Ensure symbol is visible in Market Watch
-        mt5.symbol_select(symbol, True)
-        symbol_info = mt5.symbol_info(symbol)
-        if not symbol_info:
-            return {"status": "failed", "error": f"Symbol {symbol} not found on broker"}
+        tick = None
+        symbol_info = None
+        if action in ("OPEN", "PLACE_PENDING", "PENDING"):
+            # Ensure symbol is visible in Market Watch
+            mt5.symbol_select(symbol, True)
+            symbol_info = mt5.symbol_info(symbol)
+            if not symbol_info:
+                return {"status": "failed", "error": f"Symbol {symbol} not found on broker"}
 
-        tick = mt5.symbol_info_tick(symbol)
-        if not tick:
-            return {"status": "failed", "error": f"No tick price available for {symbol}"}
+            tick = mt5.symbol_info_tick(symbol)
+            if not tick:
+                return {"status": "failed", "error": f"No tick price available for {symbol}"}
 
         # 1. OPEN NEW POSITION
         if action == "OPEN":
@@ -1439,20 +1445,32 @@ class MT5Worker:
 
             target_pos = None
             open_positions = mt5.positions_get() or ()
+
+            # 1. Match by ticket or identifier
             if target_ticket:
-                target_pos = next((p for p in open_positions if p.ticket == int(target_ticket)), None)
+                try:
+                    tt_int = int(target_ticket)
+                    target_pos = next((p for p in open_positions if p.ticket == tt_int or getattr(p, "identifier", 0) == tt_int), None)
+                except (ValueError, TypeError):
+                    pass
+
+            # 2. Match by master comment tag
             if not target_pos and master_ticket:
-                tag = f"C:{master_ticket}"
-                target_pos = next((p for p in open_positions if tag in p.comment), None)
+                m_str = str(master_ticket)
+                target_pos = next((p for p in open_positions if f"C:{m_str}" in str(p.comment) or m_str in str(p.comment)), None)
 
             if not target_pos:
                 pending_orders = mt5.orders_get() or ()
                 target_order = None
                 if target_ticket:
-                    target_order = next((o for o in pending_orders if o.ticket == int(target_ticket)), None)
+                    try:
+                        tt_int = int(target_ticket)
+                        target_order = next((o for o in pending_orders if o.ticket == tt_int), None)
+                    except (ValueError, TypeError):
+                        pass
                 if not target_order and master_ticket:
-                    tag = f"C:{master_ticket}"
-                    target_order = next((o for o in pending_orders if tag in o.comment), None)
+                    m_str = str(master_ticket)
+                    target_order = next((o for o in pending_orders if f"C:{m_str}" in str(o.comment) or m_str in str(o.comment)), None)
                 if target_order:
                     cancel_req = {
                         "action": getattr(mt5, "TRADE_ACTION_REMOVE", 8),
@@ -1464,6 +1482,9 @@ class MT5Worker:
                         "status": "success",
                         "action": "CLOSE",
                         "data": {
+                            "group_id": cmd.get("group_id"),
+                            "master_login": cmd.get("master_login"),
+                            "slave_login": self.login_id,
                             "master_ticket": master_ticket,
                             "slave_ticket": target_order.ticket,
                             "profit": 0.0
@@ -1474,51 +1495,81 @@ class MT5Worker:
                     "status": "success",
                     "action": "CLOSE",
                     "data": {
+                        "group_id": cmd.get("group_id"),
+                        "master_login": cmd.get("master_login"),
+                        "slave_login": self.login_id,
                         "master_ticket": master_ticket,
                         "slave_ticket": target_ticket,
                         "profit": 0.0
-                    }
+                    },
+                    "note": "Position not found - already closed"
                 }
 
             # Fetch fresh tick for target_pos.symbol
             pos_symbol = target_pos.symbol
-            mt5.symbol_select(pos_symbol, True)
-            pos_tick = mt5.symbol_info_tick(pos_symbol)
-            if not pos_tick:
-                pos_tick = tick
+            pos_sym_info = mt5.symbol_info(pos_symbol)
 
             close_type = mt5.ORDER_TYPE_SELL if target_pos.type == 0 else mt5.ORDER_TYPE_BUY
-            close_price = pos_tick.bid if target_pos.type == 0 else pos_tick.ask
-
             close_deviation = int(cmd.get("deviation", 20))
-            if "BTC" in target_pos.symbol.upper() or "ETH" in target_pos.symbol.upper() or (close_price > 1000):
+            if "BTC" in pos_symbol.upper() or "ETH" in pos_symbol.upper() or (target_pos.price_open > 1000):
                 close_deviation = max(close_deviation, 300)
 
-            filling_modes = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN]
+            # Determine best filling mode supported by broker, prioritizing known-good cached mode
+            pref_fill = self.symbol_preferred_filling.get(pos_symbol)
+            filling_modes = []
+            if pref_fill is not None:
+                filling_modes.append(pref_fill)
+
+            f_mode = getattr(pos_sym_info, "filling_mode", 0) if pos_sym_info else 0
+            if f_mode & 2:
+                filling_modes.append(mt5.ORDER_FILLING_IOC)
+            if f_mode & 1:
+                filling_modes.append(mt5.ORDER_FILLING_FOK)
+            filling_modes.append(mt5.ORDER_FILLING_RETURN)
+            filling_modes.extend([mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK])
+            filling_modes = list(dict.fromkeys(filling_modes))
+
             close_success = False
             last_res = None
+            max_close_retries = 3
 
-            for f_mode in filling_modes:
-                close_request = {
-                    "action": mt5.TRADE_ACTION_DEAL,
-                    "position": target_pos.ticket,
-                    "symbol": target_pos.symbol,
-                    "volume": target_pos.volume,
-                    "type": close_type,
-                    "price": close_price,
-                    "deviation": close_deviation,
-                    "magic": target_pos.magic,
-                    "comment": f"Close C:{master_ticket}" if master_ticket else f"Manual Close #{target_pos.ticket}",
-                    "type_time": mt5.ORDER_TIME_GTC,
-                    "type_filling": f_mode
-                }
-                res = mt5.order_send(close_request)
-                last_res = res
-                if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                    close_success = True
+            for attempt in range(max_close_retries):
+                pos_tick = mt5.symbol_info_tick(pos_symbol)
+                if not pos_tick:
+                    time.sleep(0.05)
+                    continue
+                close_price = pos_tick.bid if target_pos.type == 0 else pos_tick.ask
+                attempt_dev = close_deviation + (attempt * 100)
+
+                for f_mode_item in filling_modes:
+                    close_request = {
+                        "action": mt5.TRADE_ACTION_DEAL,
+                        "position": target_pos.ticket,
+                        "symbol": pos_symbol,
+                        "volume": target_pos.volume,
+                        "type": close_type,
+                        "price": close_price,
+                        "deviation": attempt_dev,
+                        "magic": target_pos.magic,
+                        "comment": f"Close C:{master_ticket}" if master_ticket else f"Manual Close #{target_pos.ticket}",
+                        "type_time": mt5.ORDER_TIME_GTC,
+                        "type_filling": f_mode_item
+                    }
+                    res = mt5.order_send(close_request)
+                    last_res = res
+                    if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                        close_success = True
+                        self.symbol_preferred_filling[pos_symbol] = f_mode_item
+                        break
+                    # If invalid filling mode, try next filling mode
+                    if res and res.retcode == mt5.TRADE_RETCODE_INVALID_FILL:
+                        continue
+                    # On requote or price changed, break out to retry with refreshed tick
                     break
-                if res and res.retcode != mt5.TRADE_RETCODE_INVALID_FILL:
+
+                if close_success:
                     break
+                time.sleep(0.05)
 
             if close_success:
                 exec_ms = int((time.time() - start_time) * 1000)
@@ -1528,6 +1579,9 @@ class MT5Worker:
                     "status": "success",
                     "action": "CLOSE",
                     "data": {
+                        "group_id": cmd.get("group_id"),
+                        "master_login": cmd.get("master_login"),
+                        "slave_login": self.login_id,
                         "master_ticket": master_ticket,
                         "slave_ticket": target_pos.ticket,
                         "profit": target_pos.profit,
@@ -1536,7 +1590,18 @@ class MT5Worker:
                 }
             else:
                 err_msg = f"Close failed: retcode={getattr(last_res, 'retcode', 'N/A')}, comment={getattr(last_res, 'comment', 'N/A')}"
-                return {"status": "failed", "action": "CLOSE", "error": err_msg}
+                return {
+                    "status": "failed",
+                    "action": "CLOSE",
+                    "error": err_msg,
+                    "data": {
+                        "group_id": cmd.get("group_id"),
+                        "master_login": cmd.get("master_login"),
+                        "slave_login": self.login_id,
+                        "master_ticket": master_ticket,
+                        "slave_ticket": target_pos.ticket
+                    }
+                }
 
         # 2B. CLOSE ALL POSITIONS
         elif action in ("CLOSE_ALL", "CLOSE_ALL_POSITIONS"):
@@ -1921,10 +1986,10 @@ class MT5Worker:
         self.launch_mt5()
         self.connect_mt5()
 
-        fast_poll_interval = float(os.environ.get("FAST_POLL_INTERVAL", "0.08"))
+        fast_poll_interval = float(os.environ.get("FAST_POLL_INTERVAL", "0.05"))
         telemetry_interval = float(os.environ.get("TELEMETRY_INTERVAL", "2.0"))
         slave_pos_interval = float(os.environ.get("SLAVE_POS_INTERVAL", "1.0"))
-        slave_cmd_interval = float(os.environ.get("SLAVE_CMD_POLL_INTERVAL", "0.12"))
+        slave_cmd_interval = float(os.environ.get("SLAVE_CMD_POLL_INTERVAL", "0.02"))
         pos_check_interval = fast_poll_interval if self.is_master else slave_pos_interval
         idle_wait_interval = fast_poll_interval if self.is_master else slave_cmd_interval
 

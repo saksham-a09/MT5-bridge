@@ -577,6 +577,22 @@ class WorkerManager:
                 continue
 
             login = cmd["login"]
+            # Guard against dispatching to non-running or stopped workers
+            if login not in self.running_workers:
+                self.dispatched_cmd_ids.add(cmd_id)
+                try:
+                    headers = {"x-node-api-key": self.api_key}
+                    api_request(
+                        "POST",
+                        f"{self.hub_url}/api/nodes/{self.node_id}/commands/{cmd_id}/result",
+                        data={"status": "failed", "error": f"Worker {login} not active on node"},
+                        headers=headers,
+                        timeout=2
+                    )
+                except Exception:
+                    pass
+                continue
+
             target_clone = os.path.join(self.clients_dir, f"clone_{login}")
             target_cmd_dir = os.path.join(target_clone, "commands")
             if os.path.isdir(target_cmd_dir):
@@ -601,15 +617,16 @@ class WorkerManager:
         self.dispatch_commands(commands)
 
     def collect_and_report_results(self):
-        """Scans for execution results written by workers and submits them to Central Hub.
-        Smart-throttles when no commands are pending to save CPU."""
+        """Scans for execution results written by workers and submits them to Central Hub via high-speed batch."""
         now = time.time()
-        # If no commands are in-flight, throttle directory scan to once every 1.5s
-        if not self.pending_results and (now - self.last_results_scan < 1.5):
+        # If no commands are in-flight, throttle directory scan to once every 1.0s
+        if not self.pending_results and (now - self.last_results_scan < 1.0):
             return
         self.last_results_scan = now
 
-        headers = {"x-node-api-key": self.api_key}
+        batch = []
+        files_to_remove = []
+
         for login, info in list(self.running_workers.items()):
             results_dir = os.path.join(info["dir"], "results")
             if not os.path.isdir(results_dir):
@@ -625,20 +642,47 @@ class WorkerManager:
                         try:
                             with open(rpath, "r", encoding="utf-8") as f:
                                 res_data = json.load(f)
-                            api_request(
-                                "POST",
-                                f"{self.hub_url}/api/nodes/{self.node_id}/commands/{cmd_id}/result",
-                                data=res_data,
-                                headers=headers,
-                                timeout=3
-                            )
-                            os.remove(rpath)
-                            self.pending_results.discard(cmd_id)
-                            self.log(f"Reported execution result for command {cmd_id} (Status: {res_data.get('status')}).")
-                        except Exception as e:
-                            self.log(f"Error submitting result for {cmd_id}: {e}", level="WARNING")
+                            batch.append({"cmd_id": cmd_id, "data": res_data})
+                            files_to_remove.append((cmd_id, rpath, res_data.get("status")))
+                        except Exception:
+                            pass
             except Exception:
                 pass
+
+        if batch:
+            headers = {"x-node-api-key": self.api_key}
+            res = api_request(
+                "POST",
+                f"{self.hub_url}/api/nodes/{self.node_id}/commands/batch-results",
+                data={"results": batch},
+                headers=headers,
+                timeout=3
+            )
+            if res.get("success"):
+                for cmd_id, rpath, status in files_to_remove:
+                    try:
+                        os.remove(rpath)
+                    except Exception:
+                        pass
+                    self.pending_results.discard(cmd_id)
+                self.log(f"Reported {len(batch)} execution result(s) in high-speed batch.")
+            else:
+                # Fallback to individual report if batch fails
+                for cmd_id, rpath, status in files_to_remove:
+                    try:
+                        with open(rpath, "r", encoding="utf-8") as f:
+                            res_data = json.load(f)
+                        api_request(
+                            "POST",
+                            f"{self.hub_url}/api/nodes/{self.node_id}/commands/{cmd_id}/result",
+                            data=res_data,
+                            headers=headers,
+                            timeout=2
+                        )
+                        os.remove(rpath)
+                        self.pending_results.discard(cmd_id)
+                    except Exception:
+                        pass
 
     def run(self):
         self.log("=" * 60)
@@ -658,7 +702,7 @@ class WorkerManager:
         last_cmd_poll = 0
         last_mem_trim = 0
 
-        cmd_poll_interval = float(os.environ.get("COMMAND_POLL_INTERVAL", "0.40"))
+        cmd_poll_interval = float(os.environ.get("COMMAND_POLL_INTERVAL", "0.15"))
         telemetry_interval = float(os.environ.get("TELEMETRY_INTERVAL", "2.0"))
 
         while self.is_running:
