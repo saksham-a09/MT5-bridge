@@ -9,6 +9,8 @@ import argparse
 import subprocess
 import threading
 import psutil
+import http.client
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 def load_dotenv(dotenv_path=".env"):
