@@ -344,6 +344,12 @@ class MT5Worker:
         self.cached_deals = None
         self.cached_daily_closed_pnl = 0.0
         self.urgent_telemetry_file = os.path.join(self.clone_dir, "urgent_telemetry.json")
+        self.ready_file = os.path.join(self.clone_dir, "worker_ready.flag")
+        if os.path.isfile(self.ready_file):
+            try:
+                os.remove(self.ready_file)
+            except Exception:
+                pass
         self._last_autotrading_toggle = 0
 
         log_file = os.path.join(self.clone_dir, f"worker_{self.login_id}.log")
@@ -724,6 +730,11 @@ class MT5Worker:
                 self.ensure_autotrading_enabled()
                 self.prune_market_watch()
                 self.optimize_process_priority()
+                try:
+                    with open(self.ready_file, "w", encoding="utf-8") as rf:
+                        rf.write(f"ready:{time.time()}")
+                except Exception:
+                    pass
                 return True
             else:
                 self.logger.warning(f"MT5 init attempt {attempt}/{max_attempts} failed: {mt5.last_error()}")
@@ -1750,6 +1761,11 @@ class MT5Worker:
 
     def restart_terminal(self):
         self.logger.info("Restarting MT5 terminal...")
+        if os.path.isfile(self.ready_file):
+            try:
+                os.remove(self.ready_file)
+            except Exception:
+                pass
         if mt5:
             try:
                 mt5.shutdown()

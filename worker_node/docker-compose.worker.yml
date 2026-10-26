@@ -18,6 +18,8 @@ services:
       - "FAST_POLL_INTERVAL=${FAST_POLL_INTERVAL:-0.08}"
       - "COMMAND_POLL_INTERVAL=${COMMAND_POLL_INTERVAL:-0.15}"
       - "TELEMETRY_INTERVAL=${TELEMETRY_INTERVAL:-2.0}"
+      - "SPAWN_STAGGER_DELAY=${SPAWN_STAGGER_DELAY:-6.0}"
+      - "SPAWN_TIMEOUT=${SPAWN_TIMEOUT:-35.0}"
     volumes:
       - ./CLIENTS:/app/CLIENTS
       - ../Master MT5:/app/master_mt5:ro
