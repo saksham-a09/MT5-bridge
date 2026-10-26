@@ -200,6 +200,9 @@ def patch_mt5_experts_config(clone_dir, logger=None):
     desired_settings = {
         "experts": {
             "Enabled": "1",
+            "Account": "0",
+            "Profile": "0",
+            "Chart": "0",
             "AllowLiveTrading": "1",
             "AllowDllImport": "1",
             "ConfirmDllCalls": "0",
@@ -341,6 +344,7 @@ class MT5Worker:
         self.cached_deals = None
         self.cached_daily_closed_pnl = 0.0
         self.urgent_telemetry_file = os.path.join(self.clone_dir, "urgent_telemetry.json")
+        self._last_autotrading_toggle = 0
 
         log_file = os.path.join(self.clone_dir, f"worker_{self.login_id}.log")
         
@@ -428,6 +432,11 @@ class MT5Worker:
             if t_info and getattr(t_info, "trade_allowed", False):
                 return True
 
+            # Throttle toggle attempts to avoid rapid oscillating toggles
+            now = time.time()
+            if hasattr(self, "_last_autotrading_toggle") and (now - self._last_autotrading_toggle < 5.0):
+                return False
+
             self.logger.warning("MT5 AutoTrading is DISABLED (trade_allowed=False). Auto-enabling via Windows GUI message...")
             import ctypes
             user32 = ctypes.windll.user32
@@ -452,6 +461,7 @@ class MT5Worker:
             user32.EnumWindows(WNDENUMPROC(enum_proc), 0)
 
             # Fallback: if no hwnds found by PID, check by window title/class
+            # CRITICAL: Must strictly match THIS login_id to avoid toggling other terminals!
             if not hwnds:
                 login_str = str(self.login_id)
                 def enum_fallback(hwnd, lparam):
@@ -460,11 +470,21 @@ class MT5Worker:
                         user32.GetWindowTextW(hwnd, buf, 512)
                         cbuf = ctypes.create_unicode_buffer(256)
                         user32.GetClassNameW(hwnd, cbuf, 256)
-                        if login_str in buf.value or "MetaTrader" in buf.value or "MetaQuotes" in cbuf.value:
+                        if login_str in buf.value and ("MetaTrader" in buf.value or "MetaQuotes" in cbuf.value):
                             hwnds.append(hwnd)
                     return True
                 user32.EnumWindows(WNDENUMPROC(enum_fallback), 0)
 
+            if not hwnds:
+                self.logger.warning(f"Could not locate HWND for terminal {self.login_id} to enable AutoTrading.")
+                return False
+
+            # Verify trade_allowed is still False before sending toggle command
+            t_info_check = mt5.terminal_info()
+            if t_info_check and getattr(t_info_check, "trade_allowed", False):
+                return True
+
+            self._last_autotrading_toggle = now
             WM_COMMAND = 0x0111
             MT5_CMD_AUTOTRADING = 32851  # ID_EXPERTS_ENABLE
 
