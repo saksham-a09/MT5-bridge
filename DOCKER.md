@@ -29,9 +29,33 @@ docker compose up -d --build
 
 ## 2. Deploying a Worker Node in Docker (Linux VPS)
 
-To run MT5 trading terminals inside Docker on a Linux VPS (Ubuntu, Debian, etc.):
+To run MT5 trading terminals inside Docker on a Linux VPS (Ubuntu, Debian, CentOS, Rocky, etc.):
 
-### Step 1: Clone Repository and Pull Git LFS Binaries
+### Option A: One-Command Automated Setup (Recommended)
+
+Run the automated dependency checker and installer directly on your Linux VPS:
+
+```bash
+chmod +x setup_worker_linux.sh
+./setup_worker_linux.sh
+```
+*(Or run with `./setup_worker_linux.sh --start` to automatically check, install, build, and launch the container).*
+
+This script automatically:
+1. Detects your distribution and verifies root/sudo privileges.
+2. Checks CPU architecture and installs QEMU binfmt emulation if running on ARM64.
+3. Installs core dependencies (`curl`, `wget`, `git`, `ca-certificates`).
+4. Installs `git-lfs` and pulls real `terminal64.exe` binaries instead of text pointers.
+5. Installs and configures Docker Engine and Docker Compose v2 if missing.
+6. Tunes kernel memory limits (`vm.max_map_count=1048576` and `fs.file-max`) for multi-terminal Wine stability.
+7. Prepares `CLIENTS` directory permissions and verifies `.env` configuration.
+8. Tests connectivity to your Central Hub and launches the worker container.
+
+---
+
+### Option B: Manual Setup
+
+#### Step 1: Clone Repository and Pull Git LFS Binaries
 ```bash
 # 1. Install Git LFS so large MT5 binaries (*.exe, *.dll) are downloaded instead of text pointers
 sudo apt-get update && sudo apt-get install -y git-lfs
@@ -46,7 +70,7 @@ git lfs pull
 cd worker_node
 ```
 
-### Step 2: Configure Environment Variables
+#### Step 2: Configure Environment Variables
 Edit `docker-compose.worker.yml` (or create a `.env` file in `worker_node/`):
 ```ini
 HUB_URL=http://YOUR_SERVER_IP:8000
@@ -56,7 +80,7 @@ NODE_API_KEY=mt5-cluster-secret-key-2026
 MAX_TERMINALS=30
 ```
 
-### Step 3: Launch Worker Container
+#### Step 3: Launch Worker Container
 ```bash
 docker compose -f docker-compose.worker.yml up -d --build
 ```
