@@ -8,6 +8,7 @@ import platform
 import argparse
 import subprocess
 import threading
+import shutil
 import psutil
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
@@ -182,6 +183,51 @@ class WorkerManager:
             except Exception:
                 pass
         return terminated
+
+    def delete_clone_dir(self, login):
+        """Safely removes an unassigned clone directory to reclaim disk space."""
+        login_str = str(login)
+        clone_dir = os.path.abspath(os.path.join(self.clients_dir, f"clone_{login_str}"))
+        if os.path.isdir(clone_dir):
+            try:
+                self.kill_processes_for_login(login)
+                time.sleep(0.2)
+                shutil.rmtree(clone_dir, ignore_errors=True)
+                self.log(f"Reclaimed disk space: deleted unassigned clone directory for Login {login_str}")
+            except Exception as e:
+                self.log(f"Failed to delete clone directory {clone_dir}: {e}", level="WARNING")
+
+    def cleanup_stale_clones(self, assigned_logins):
+        """Scans clients_dir and removes clone folders for accounts not assigned to this hardware node."""
+        if not os.path.isdir(self.clients_dir):
+            return
+        try:
+            assigned_set = {str(l) for l in assigned_logins}
+            removed_count = 0
+            for name in os.listdir(self.clients_dir):
+                if not name.startswith("clone_"):
+                    continue
+                login_str = name.split("clone_", 1)[1]
+                if login_str not in assigned_set:
+                    # Do not delete an account currently spawning or in spawn queue
+                    if self.spawning_worker and str(self.spawning_worker.get("login")) == login_str:
+                        continue
+                    if any(str(l) == login_str for l in self.spawn_queue):
+                        continue
+                    clone_path = os.path.join(self.clients_dir, name)
+                    if os.path.isdir(clone_path):
+                        self.log(f"Cleaning up orphan/unassigned clone: {name}")
+                        try:
+                            self.kill_processes_for_login(login_str)
+                            time.sleep(0.2)
+                            shutil.rmtree(clone_path, ignore_errors=True)
+                            removed_count += 1
+                        except Exception as e:
+                            self.log(f"Error removing {clone_path}: {e}", level="WARNING")
+            if removed_count > 0:
+                self.log(f"Orphan cleanup complete: removed {removed_count} stale clone directories.")
+        except Exception as e:
+            self.log(f"Error during stale clone scan: {e}", level="WARNING")
 
     def global_cleanup(self):
         """Clean up any orphan terminals or workers in clients_dir on startup."""
@@ -392,6 +438,7 @@ class WorkerManager:
             return
 
         assigned_accounts = res.get("accounts", [])
+        all_assigned_logins = {int(acc["login"]) for acc in assigned_accounts}
         active_map = {}
 
         for acc in assigned_accounts:
@@ -406,6 +453,8 @@ class WorkerManager:
                 self.log(f"Account {login} stopped or unassigned. Shutting down worker...")
                 self.kill_processes_for_login(login)
                 del self.running_workers[login]
+                if login not in all_assigned_logins:
+                    self.delete_clone_dir(login)
 
         # Cancel actively spawning worker if unassigned
         if self.spawning_worker and self.spawning_worker["login"] not in active_map:
@@ -414,12 +463,20 @@ class WorkerManager:
             self.kill_processes_for_login(s_login)
             self.spawning_worker = None
             self.last_spawn_time = time.time()
+            if s_login not in all_assigned_logins:
+                self.delete_clone_dir(s_login)
 
         # Remove stopped/unassigned accounts from pending spawn queue
         self.spawn_queue = [l for l in self.spawn_queue if l in active_map]
         for l in list(self.spawn_queue_configs.keys()):
             if l not in active_map:
                 del self.spawn_queue_configs[l]
+
+        # Periodically scan and clean up orphan clone folders on disk (every 30s)
+        now = time.time()
+        if now - getattr(self, "_last_stale_sweep", 0) >= 30.0:
+            self.cleanup_stale_clones(all_assigned_logins)
+            self._last_stale_sweep = now
 
         # 2. Check running workers for config changes or unexpected exits
         for login, creds in active_map.items():

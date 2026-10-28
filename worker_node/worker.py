@@ -546,11 +546,20 @@ class MT5Worker:
                 return None
             shutil_dest = os.path.join(self.clone_dir, os.path.basename(self.terminal_path))
             try:
-                shutil.copy2(self.terminal_path, shutil_dest)
-                self.logger.info(f"Copied terminal executable to {shutil_dest}")
+                if os.path.exists(shutil_dest):
+                    try:
+                        os.remove(shutil_dest)
+                    except Exception:
+                        pass
+                try:
+                    os.link(self.terminal_path, shutil_dest)
+                    self.logger.info(f"Hardlinked terminal executable to {shutil_dest}")
+                except OSError:
+                    shutil.copy2(self.terminal_path, shutil_dest)
+                    self.logger.info(f"Copied terminal executable to {shutil_dest}")
                 return shutil_dest
             except Exception as e:
-                self.logger.error(f"Failed to copy terminal executable: {e}")
+                self.logger.error(f"Failed to copy/link terminal executable: {e}")
                 return None
         return None
 
@@ -579,12 +588,29 @@ class MT5Worker:
                     # Exclude heavy non-essential folders to save disk space and RAM
                     ignored = []
                     for name in names:
-                        if name.lower() in ("bases", "sounds", "help", "tester", "templates"):
+                        if name.lower() in ("bases", "sounds", "help", "tester", "templates", "include"):
                             ignored.append(name)
                     return ignored
 
-                shutil.copytree(master_dir, self.clone_dir, ignore=_ignore_bloat, dirs_exist_ok=True)
-                self.logger.info(f"Successfully cloned master MT5 structure to {self.clone_dir} (resource optimized)")
+                def _smart_link_copy(src, dst):
+                    if os.path.exists(dst):
+                        try:
+                            os.remove(dst)
+                        except Exception:
+                            pass
+                    try:
+                        os.link(src, dst)
+                    except OSError:
+                        shutil.copy2(src, dst)
+
+                shutil.copytree(
+                    master_dir,
+                    self.clone_dir,
+                    ignore=_ignore_bloat,
+                    copy_function=_smart_link_copy,
+                    dirs_exist_ok=True
+                )
+                self.logger.info(f"Successfully cloned master MT5 structure to {self.clone_dir} (hardlinked / resource optimized)")
             except Exception as e:
                 self.logger.error(f"Failed to clone master MT5 directory: {e}")
                 return False
@@ -593,6 +619,19 @@ class MT5Worker:
         if not executable:
             self.logger.error("No valid MT5 terminal executable found.")
             return False
+
+        # If existing executable is a duplicate file, replace with hardlink to save ~45MB
+        if os.path.isfile(self.terminal_path) and os.path.isfile(executable):
+            try:
+                if os.stat(executable).st_ino != os.stat(self.terminal_path).st_ino:
+                    os.remove(executable)
+                    try:
+                        os.link(self.terminal_path, executable)
+                        self.logger.info(f"Reclaimed disk space: replaced duplicate binary with hardlink for {executable}")
+                    except OSError:
+                        shutil.copy2(self.terminal_path, executable)
+            except Exception:
+                pass
 
         valid, reason = validate_terminal_executable(executable)
         if not valid:
