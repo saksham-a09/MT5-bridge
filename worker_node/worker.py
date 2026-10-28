@@ -588,7 +588,7 @@ class MT5Worker:
                     # Exclude heavy non-essential folders to save disk space and RAM
                     ignored = []
                     for name in names:
-                        if name.lower() in ("bases", "sounds", "help", "tester", "templates", "include"):
+                        if name.lower() in ("bases", "sounds", "help", "tester", "templates", "include", "webinstall", "autoupdate"):
                             ignored.append(name)
                     return ignored
 
@@ -690,6 +690,57 @@ class MT5Worker:
 
         # Ensure AutoTrading is configured in terminal ini files with low-RAM parameters
         patch_mt5_experts_config(self.clone_dir, self.logger)
+
+        # 4.5 Permanently disable MT5 auto-updates & bloat downloads
+        # (a) Wine APPDATA WebInstall lock
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            try:
+                mq_dir = os.path.join(appdata, "MetaQuotes")
+                os.makedirs(mq_dir, exist_ok=True)
+                wi_appdata = os.path.join(mq_dir, "WebInstall")
+                if os.path.isdir(wi_appdata):
+                    shutil.rmtree(wi_appdata, ignore_errors=True)
+                if not os.path.exists(wi_appdata):
+                    with open(wi_appdata, "wb") as f:
+                        pass
+                    os.chmod(wi_appdata, 0o444)
+            except Exception:
+                pass
+
+        # (b) Local clone webinstall lock
+        try:
+            local_wi = os.path.join(self.clone_dir, "webinstall")
+            if os.path.isdir(local_wi):
+                shutil.rmtree(local_wi, ignore_errors=True)
+            if not os.path.exists(local_wi):
+                with open(local_wi, "wb") as f:
+                    pass
+                os.chmod(local_wi, 0o444)
+        except Exception:
+            pass
+
+        # (c) Dummy 0-byte read-only files for MetaEditor/MetaTester to prevent downloading 138MB bloat
+        for dummy_bin in ["MetaEditor64.exe", "metatester64.exe", "metaeditor.exe", "metatester.exe"]:
+            p = os.path.join(self.clone_dir, dummy_bin)
+            try:
+                # If previously downloaded bloat binary (>1KB), delete it to reclaim disk space
+                if os.path.isfile(p) and os.path.getsize(p) > 1024:
+                    os.remove(p)
+                    self.logger.info(f"Reclaimed disk space: removed unwanted {dummy_bin}")
+                if not os.path.exists(p):
+                    with open(p, "wb") as f:
+                        pass
+                    os.chmod(p, 0o444)
+            except Exception:
+                pass
+
+        # (d) Write-protect terminal64.exe so LiveUpdate cannot overwrite it
+        if os.path.isfile(executable):
+            try:
+                os.chmod(executable, 0o555)
+            except Exception:
+                pass
 
         # 5. Launch terminal in portable mode
         creation_flags = 0

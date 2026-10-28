@@ -22,6 +22,17 @@ export PATH="/opt/wine-stable/bin:${PATH}"
 # Wait briefly for Xvfb initialization
 sleep 2
 
+# 2.5 Permanently lock Wine WebInstall to disable MT5 auto-updates
+for user_dir in "${WINEPREFIX}/drive_c/users"/*; do
+    if [ -d "$user_dir" ]; then
+        MQ_DIR="$user_dir/AppData/Roaming/MetaQuotes"
+        mkdir -p "$MQ_DIR" 2>/dev/null || true
+        rm -rf "$MQ_DIR/WebInstall" 2>/dev/null || true
+        touch "$MQ_DIR/WebInstall" 2>/dev/null || true
+        chmod 444 "$MQ_DIR/WebInstall" 2>/dev/null || true
+    fi
+done
+
 # Cleanup handler on container shutdown
 cleanup() {
     echo "[-] Shutting down MT5 worker..."
