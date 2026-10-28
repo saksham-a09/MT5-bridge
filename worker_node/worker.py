@@ -735,14 +735,26 @@ class MT5Worker:
             except Exception:
                 pass
 
-        # (d) Write-protect terminal64.exe so LiveUpdate cannot overwrite it
+        # (d) Clean any cached liveupdate directories in Wine profile
+        if appdata:
+            try:
+                term_dir = os.path.join(appdata, "MetaQuotes", "Terminal")
+                if os.path.isdir(term_dir):
+                    for h in os.listdir(term_dir):
+                        lu_dir = os.path.join(term_dir, h, "liveupdate")
+                        if os.path.exists(lu_dir):
+                            shutil.rmtree(lu_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+        # (e) Write-protect terminal64.exe so LiveUpdate cannot overwrite it
         if os.path.isfile(executable):
             try:
                 os.chmod(executable, 0o555)
             except Exception:
                 pass
 
-        # 5. Launch terminal in portable mode
+        # 5. Launch terminal in portable mode with auto-updates disabled
         creation_flags = 0
         if os.name == "nt" and not is_wine():
             creation_flags = subprocess.CREATE_NEW_CONSOLE
@@ -750,8 +762,8 @@ class MT5Worker:
         abs_executable = os.path.abspath(executable)
         abs_clone_dir = os.path.abspath(self.clone_dir)
 
-        # In portable mode with cwd=abs_clone_dir, /config:config.ini reliably loads config.ini from cwd without space/path quoting issues
-        cmd_str = f'"{abs_executable}" /portable /config:config.ini'
+        # In portable mode with cwd=abs_clone_dir, /skipupdate prevents checking for updates, /config loads config
+        cmd_str = f'"{abs_executable}" /portable /skipupdate /config:config.ini'
         self.logger.info(f"Launching MT5: {cmd_str} in cwd: {abs_clone_dir}")
 
         try:

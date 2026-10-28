@@ -22,4 +22,8 @@ services:
       - "SPAWN_TIMEOUT=${SPAWN_TIMEOUT:-35.0}"
     volumes:
       - ../:/app_data
+    extra_hosts:
+      - "liveupdate.metaquotes.net:127.0.0.1"
+      - "downloads.metaquotes.net:127.0.0.1"
+      - "updates.metaquotes.net:127.0.0.1"
     ipc: host

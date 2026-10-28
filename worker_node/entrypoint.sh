@@ -22,7 +22,12 @@ export PATH="/opt/wine-stable/bin:${PATH}"
 # Wait briefly for Xvfb initialization
 sleep 2
 
-# 2.5 Permanently lock Wine WebInstall to disable MT5 auto-updates
+# 2.5 Block MetaQuotes LiveUpdate domains to permanently disable MT5 auto-updates
+if ! grep -q "liveupdate.metaquotes.net" /etc/hosts 2>/dev/null; then
+    echo "127.0.0.1 liveupdate.metaquotes.net downloads.metaquotes.net updates.metaquotes.net" >> /etc/hosts 2>/dev/null || true
+fi
+pkill -9 -f liveupdate 2>/dev/null || true
+
 for user_dir in "${WINEPREFIX}/drive_c/users"/*; do
     if [ -d "$user_dir" ]; then
         MQ_DIR="$user_dir/AppData/Roaming/MetaQuotes"
@@ -30,6 +35,7 @@ for user_dir in "${WINEPREFIX}/drive_c/users"/*; do
         rm -rf "$MQ_DIR/WebInstall" 2>/dev/null || true
         touch "$MQ_DIR/WebInstall" 2>/dev/null || true
         chmod 444 "$MQ_DIR/WebInstall" 2>/dev/null || true
+        rm -rf "$MQ_DIR/Terminal"/*/liveupdate 2>/dev/null || true
     fi
 done
 
