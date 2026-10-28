@@ -33,6 +33,14 @@ for user_dir in "${WINEPREFIX}/drive_c/users"/*; do
     fi
 done
 
+# 2.6 Link shared /app_data volume paths
+if [ -d "/app_data" ]; then
+    mkdir -p "/app_data/worker_node/CLIENTS" 2>/dev/null || true
+    rm -rf /app/CLIENTS /app/master_mt5 2>/dev/null || true
+    ln -sfn "/app_data/worker_node/CLIENTS" /app/CLIENTS
+    ln -sfn "/app_data/Master MT5" /app/master_mt5
+fi
+
 # Cleanup handler on container shutdown
 cleanup() {
     echo "[-] Shutting down MT5 worker..."
