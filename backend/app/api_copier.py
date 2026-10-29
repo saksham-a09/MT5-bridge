@@ -85,8 +85,9 @@ def delete_group(group_id: int):
     grp = get_copy_group_by_id(group_id)
     if not grp:
         raise HTTPException(status_code=404, detail="Copy Group not found")
+    copier_engine.cleanup_group_trades(group_id)
     delete_copy_group(group_id)
-    return {"success": True, "message": f"Copy Group #{group_id} deleted."}
+    return {"success": True, "message": f"Copy Group #{group_id} deleted and active copied trades cleaned up."}
 
 @router.post("/groups/{group_id}/slaves")
 def add_slave(group_id: int, payload: SlaveAdd):
@@ -120,10 +121,11 @@ def remove_slave(group_id: int, slave_login: int):
     if not grp:
         raise HTTPException(status_code=404, detail="Copy Group not found")
 
+    copier_engine.cleanup_slave_trades(group_id, slave_login)
     remove_slave_from_group(group_id, slave_login)
     return {
         "success": True,
-        "message": f"Slave Account {slave_login} removed from Group #{group_id}."
+        "message": f"Slave Account {slave_login} removed from Group #{group_id} and active copied trades cleaned up."
     }
 
 @router.get("/trades")

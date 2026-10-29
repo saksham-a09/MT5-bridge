@@ -1444,43 +1444,63 @@ class MT5Worker:
                 }
 
             close_type = mt5.ORDER_TYPE_SELL if target_pos.type == 0 else mt5.ORDER_TYPE_BUY
-            close_price = tick.bid if target_pos.type == 0 else tick.ask
-
             close_deviation = int(cmd.get("deviation", 20))
             if "BTC" in target_pos.symbol.upper() or "ETH" in target_pos.symbol.upper() or (tick.bid > 1000):
                 close_deviation = max(close_deviation, 300)
-
-            close_request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "position": target_pos.ticket,
-                "symbol": target_pos.symbol,
-                "volume": target_pos.volume,
-                "type": close_type,
-                "price": close_price,
-                "deviation": close_deviation,
-                "magic": target_pos.magic,
-                "comment": f"Close C:{master_ticket}",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC
-            }
-
-            res = mt5.order_send(close_request)
-            if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                exec_ms = int((time.time() - start_time) * 1000)
-                self.logger.info(f"CLOSE SUCCESS Ticket #{target_pos.ticket} in {exec_ms}ms")
-                return {
-                    "status": "success",
-                    "action": "CLOSE",
-                    "data": {
-                        "master_ticket": master_ticket,
-                        "slave_ticket": target_pos.ticket,
-                        "profit": target_pos.profit,
-                        "execution_ms": exec_ms
-                    }
-                }
             else:
-                err_msg = f"Close failed: retcode={getattr(res, 'retcode', 'N/A')}"
-                return {"status": "failed", "action": "CLOSE", "error": err_msg}
+                close_deviation = max(close_deviation, 50)
+
+            symbol_info = mt5.symbol_info(target_pos.symbol)
+            filling_modes = [getattr(mt5, "ORDER_FILLING_IOC", 1)]
+            f_mode = getattr(symbol_info, "filling_mode", 0) if symbol_info else 0
+            if f_mode & 1:
+                filling_modes.append(getattr(mt5, "ORDER_FILLING_FOK", 0))
+            if f_mode & 2:
+                filling_modes.append(getattr(mt5, "ORDER_FILLING_IOC", 1))
+            filling_modes.append(getattr(mt5, "ORDER_FILLING_RETURN", 2))
+            filling_modes = list(dict.fromkeys(filling_modes))
+
+            last_res = None
+            for attempt in range(3):
+                tick = mt5.symbol_info_tick(target_pos.symbol)
+                if tick:
+                    close_price = tick.bid if target_pos.type == 0 else tick.ask
+
+                for fm in filling_modes:
+                    close_request = {
+                        "action": mt5.TRADE_ACTION_DEAL,
+                        "position": target_pos.ticket,
+                        "symbol": target_pos.symbol,
+                        "volume": target_pos.volume,
+                        "type": close_type,
+                        "price": close_price,
+                        "deviation": close_deviation,
+                        "magic": target_pos.magic,
+                        "comment": f"Close C:{master_ticket}",
+                        "type_time": mt5.ORDER_TIME_GTC,
+                        "type_filling": fm
+                    }
+                    res = mt5.order_send(close_request)
+                    last_res = res
+                    if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                        exec_ms = int((time.time() - start_time) * 1000)
+                        self.logger.info(f"CLOSE SUCCESS Ticket #{target_pos.ticket} in {exec_ms}ms")
+                        return {
+                            "status": "success",
+                            "action": "CLOSE",
+                            "data": {
+                                "master_ticket": master_ticket,
+                                "slave_ticket": target_pos.ticket,
+                                "profit": target_pos.profit,
+                                "execution_ms": exec_ms
+                            }
+                        }
+                    if res and res.retcode != getattr(mt5, "TRADE_RETCODE_INVALID_FILL", 10030):
+                        break
+                time.sleep(0.05)
+
+            err_msg = f"Close failed after retries: retcode={getattr(last_res, 'retcode', 'N/A')}, comment={getattr(last_res, 'comment', 'N/A')}"
+            return {"status": "failed", "action": "CLOSE", "error": err_msg}
 
         # 3. MODIFY SL/TP
         elif action == "MODIFY_SLTP":
@@ -1712,6 +1732,49 @@ class MT5Worker:
                 target_order = next((o for o in pending_orders if tag in o.comment), None)
 
             if not target_order:
+                # Check if this pending order already triggered into an active position
+                open_positions = mt5.positions_get() or ()
+                target_pos = None
+                if slave_ticket:
+                    target_pos = next((p for p in open_positions if p.ticket == int(slave_ticket)), None)
+                if not target_pos and master_ticket:
+                    tag = f"C:{master_ticket}"
+                    target_pos = next((p for p in open_positions if tag in p.comment), None)
+
+                if target_pos:
+                    self.logger.warning(
+                        f"Pending order #{slave_ticket} (C:{master_ticket}) already triggered into position #{target_pos.ticket}. Closing triggered position..."
+                    )
+                    close_type = mt5.ORDER_TYPE_SELL if target_pos.type == 0 else mt5.ORDER_TYPE_BUY
+                    tick = mt5.symbol_info_tick(target_pos.symbol)
+                    if tick:
+                        close_price = tick.bid if target_pos.type == 0 else tick.ask
+                        for f in [getattr(mt5, "ORDER_FILLING_IOC", 1), getattr(mt5, "ORDER_FILLING_FOK", 0), getattr(mt5, "ORDER_FILLING_RETURN", 2)]:
+                            res = mt5.order_send({
+                                "action": mt5.TRADE_ACTION_DEAL,
+                                "position": target_pos.ticket,
+                                "symbol": target_pos.symbol,
+                                "volume": target_pos.volume,
+                                "type": close_type,
+                                "price": close_price,
+                                "deviation": 50,
+                                "magic": target_pos.magic,
+                                "comment": f"Close-Triggered C:{master_ticket}",
+                                "type_time": mt5.ORDER_TIME_GTC,
+                                "type_filling": f
+                            })
+                            if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                                break
+                    return {
+                        "status": "success",
+                        "action": "CANCEL_PENDING",
+                        "data": {
+                            "master_ticket": master_ticket,
+                            "slave_ticket": target_pos.ticket,
+                            "note": "Triggered position closed"
+                        }
+                    }
+
                 self.logger.warning(
                     f"Pending order for cancel not found (slave: {slave_ticket}, master: {master_ticket}). Already removed."
                 )

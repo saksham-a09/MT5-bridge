@@ -1138,6 +1138,16 @@ def get_open_copied_trades(group_id: Optional[int] = None) -> List[Dict[str, Any
         cursor = conn.execute(query, params)
         return [dict(r) for r in cursor.fetchall()]
 
+def get_active_copied_trade_by_slave_ticket(slave_login: int, slave_ticket: int) -> Optional[Dict[str, Any]]:
+    with get_db() as conn:
+        cursor = conn.execute("""
+        SELECT * FROM copied_trades
+        WHERE slave_login = ? AND slave_ticket = ? AND status IN ('open', 'pending')
+        ORDER BY id DESC LIMIT 1
+        """, (slave_login, slave_ticket))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
 # Node command queue helpers
 def enqueue_node_command(node_id: str, login: int, action: str, payload: Dict[str, Any]) -> str:
     import uuid
@@ -1152,6 +1162,14 @@ def enqueue_node_command(node_id: str, login: int, action: str, payload: Dict[st
 
 def get_pending_node_commands(node_id: str) -> List[Dict[str, Any]]:
     with get_db() as conn:
+        # Auto-requeue any dispatched commands older than 30s that were lost/unacknowledged
+        conn.execute("""
+        UPDATE copy_node_commands
+        SET status = 'pending'
+        WHERE node_id = ? AND status = 'dispatched'
+        AND datetime(created_at) < datetime('now', '-30 seconds')
+        """, (node_id,))
+
         cursor = conn.execute("""
         SELECT * FROM copy_node_commands
         WHERE node_id = ? AND status = 'pending'
