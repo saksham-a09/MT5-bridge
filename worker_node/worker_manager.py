@@ -795,8 +795,19 @@ class WorkerManager:
                     pass
                 last_telemetry = now
 
-            # 8. Periodic working set memory trim across manager and workers (every 60s)
-            if now - last_mem_trim >= 60.0:
+            # 8. Periodic LiveUpdate termination and memory trim across manager and workers (every 15s)
+            if now - last_mem_trim >= 15.0:
+                try:
+                    for p in psutil.process_iter(["pid", "name", "cmdline"]):
+                        try:
+                            cmd_str = " ".join(p.info.get("cmdline") or []).lower()
+                            if "liveupdate" in cmd_str:
+                                p.kill()
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+                except Exception:
+                    pass
+
                 trim_working_set(os.getpid())
                 for login, info in list(self.running_workers.items()):
                     proc = info.get("process")

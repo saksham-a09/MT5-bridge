@@ -742,8 +742,15 @@ class MT5Worker:
                 if os.path.isdir(term_dir):
                     for h in os.listdir(term_dir):
                         lu_dir = os.path.join(term_dir, h, "liveupdate")
-                        if os.path.exists(lu_dir):
+                        if os.path.isdir(lu_dir):
                             shutil.rmtree(lu_dir, ignore_errors=True)
+                        if not os.path.exists(lu_dir):
+                            try:
+                                with open(lu_dir, "w") as f:
+                                    pass
+                                os.chmod(lu_dir, 0o444)
+                            except Exception:
+                                pass
             except Exception:
                 pass
 

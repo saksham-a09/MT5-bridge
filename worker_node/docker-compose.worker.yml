@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: mt5-worker-node
+    container_name: mt5-worker-node-${NODE_ID:-1}
     restart: unless-stopped
     network_mode: "host"
     environment:
@@ -12,7 +12,7 @@ services:
       - "NODE_NAME=${NODE_NAME:-Linux Cloud Worker 1}"
       - "NODE_API_KEY=${NODE_API_KEY:-mt5-cluster-secret-key-2026}"
       - "MASTER_MT5_DIR=${MASTER_MT5_DIR:-/app_data/Master MT5}"
-      - "CLIENTS_DIR=${CLIENTS_DIR:-/app_data/worker_node/CLIENTS}"
+      - "CLIENTS_DIR=${CLIENTS_DIR:-/app_data/worker_node/CLIENTS_${NODE_ID:-1}}"
       - MAX_TERMINALS=${MAX_TERMINALS:-30}
       - POLL_INTERVAL=8
       - "FAST_POLL_INTERVAL=${FAST_POLL_INTERVAL:-0.08}"
@@ -27,3 +27,8 @@ services:
       - "downloads.metaquotes.net:127.0.0.1"
       - "updates.metaquotes.net:127.0.0.1"
     ipc: host
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
