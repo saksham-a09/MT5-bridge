@@ -1,29 +1,16 @@
 import time
 import json
 import logging
-import re
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timezone
 
 from .db import (
     get_all_copy_groups, get_account_by_login, enqueue_node_command,
     record_copied_trade, update_copied_trade, get_active_copied_trade,
-    get_open_copied_trades, get_active_copied_trade_by_slave_ticket, add_log
+    get_open_copied_trades, add_log
 )
 
 logger = logging.getLogger("TradeCopierEngine")
-
-def extract_master_ticket_from_comment(comment: Any) -> Optional[int]:
-    """Robustly extracts master ticket from MT5 comments (e.g. 'C:12345', '[tp] C:12345', etc.)."""
-    if not comment:
-        return None
-    m = re.search(r'[Cc]:\s*(\d+)', str(comment))
-    if m:
-        try:
-            return int(m.group(1))
-        except (ValueError, TypeError):
-            pass
-    return None
 
 class TradeCopierEngine:
     def __init__(self):
@@ -84,8 +71,7 @@ class TradeCopierEngine:
         try:
             groups = get_all_copy_groups()
             for grp in groups:
-                status = grp.get("status", "active")
-                if status not in ("active", "paused"):
+                if grp.get("status") != "active":
                     continue
                 self._evaluate_group(grp)
         except Exception as e:
@@ -102,12 +88,6 @@ class TradeCopierEngine:
         if not master_acc:
             return
 
-        is_active = (grp.get("status", "active") == "active")
-        symbol_mappings = grp.get("symbol_mappings", {})
-        copy_sl_tp = bool(grp.get("copy_sl_tp", 1))
-        max_slippage = int(grp.get("max_slippage_points", 20))
-        copy_pending_orders = bool(grp.get("copy_pending_orders", 1))
-
         master_positions = master_acc.get("open_positions", [])
         curr_master_pos_map = {int(p["ticket"]): p for p in master_positions if "ticket" in p}
 
@@ -115,7 +95,7 @@ class TradeCopierEngine:
         prev_master_pos_map = self.master_positions_cache.get(master_login, {})
         self.master_positions_cache[master_login] = curr_master_pos_map
 
-        # 1. Process Master CLOSED positions -> Close on active slaves (runs whether active or paused!)
+        # 1. Process Master CLOSED positions -> Close on active slaves
         for old_ticket, old_pos in prev_master_pos_map.items():
             if old_ticket not in curr_master_pos_map:
                 # Master position closed!
@@ -160,43 +140,47 @@ class TradeCopierEngine:
                         master_profit=m_profit
                     )
 
-        # 2. Process Master OPEN or MODIFIED positions -> Replicate to active slaves (ONLY if active)
-        if is_active:
-            for m_ticket, m_pos in curr_master_pos_map.items():
-                for s in slaves:
-                    if s.get("status") != "active":
-                        continue
-                    slave_login = s["slave_login"]
-                    slave_acc = get_account_by_login(slave_login)
-                    if not slave_acc:
-                        continue
+        # 2. Process Master OPEN or MODIFIED positions -> Replicate to active slaves
+        symbol_mappings = grp.get("symbol_mappings", {})
+        copy_sl_tp = bool(grp.get("copy_sl_tp", 1))
+        max_slippage = int(grp.get("max_slippage_points", 20))
+        copy_pending_orders = bool(grp.get("copy_pending_orders", 1))
 
-                    slave_positions = slave_acc.get("open_positions", [])
-                    slave_orders = slave_acc.get("pending_orders", [])
-                    
-                    # Check if slave already holds a position (or pending order) copied from this master ticket
-                    existing_slave_ticket = self._find_matching_slave_ticket(
-                        m_ticket, slave_login, slave_positions, slave_orders
-                    )
+        for m_ticket, m_pos in curr_master_pos_map.items():
+            for s in slaves:
+                if s.get("status") != "active":
+                    continue
+                slave_login = s["slave_login"]
+                slave_acc = get_account_by_login(slave_login)
+                if not slave_acc:
+                    continue
 
-                    if existing_slave_ticket:
-                        is_in_positions = any(int(p.get("ticket", 0)) == existing_slave_ticket for p in slave_positions)
-                        if is_in_positions:
-                            update_copied_trade(master_ticket=m_ticket, slave_login=slave_login, status="open")
-                            if copy_sl_tp:
-                                self._check_and_dispatch_modify(
-                                    group_id, master_login, slave_login, m_ticket,
-                                    existing_slave_ticket, m_pos, slave_positions, slave_acc
-                                )
-                        else:
-                            # Order is still pending on slave. Wait for it to trigger.
-                            pass
+                slave_positions = slave_acc.get("open_positions", [])
+                slave_orders = slave_acc.get("pending_orders", [])
+                
+                # Check if slave already holds a position (or pending order) copied from this master ticket
+                existing_slave_ticket = self._find_matching_slave_ticket(
+                    m_ticket, slave_login, slave_positions, slave_orders
+                )
+
+                if existing_slave_ticket:
+                    is_in_positions = any(int(p.get("ticket", 0)) == existing_slave_ticket for p in slave_positions)
+                    if is_in_positions:
+                        update_copied_trade(master_ticket=m_ticket, slave_login=slave_login, status="open")
+                        if copy_sl_tp:
+                            self._check_and_dispatch_modify(
+                                group_id, master_login, slave_login, m_ticket,
+                                existing_slave_ticket, m_pos, slave_positions, slave_acc
+                            )
                     else:
-                        # New position to copy!
-                        self._dispatch_open(
-                            group_id, master_login, slave_login, m_ticket, m_pos,
-                            grp, s, master_acc, slave_acc, symbol_mappings, max_slippage, copy_sl_tp
-                        )
+                        # Order is still pending on slave. Wait for it to trigger.
+                        pass
+                else:
+                    # New position to copy!
+                    self._dispatch_open(
+                        group_id, master_login, slave_login, m_ticket, m_pos,
+                        grp, s, master_acc, slave_acc, symbol_mappings, max_slippage, copy_sl_tp
+                    )
 
         # 3. Process Master PENDING orders
         master_pending = master_acc.get("pending_orders", [])
@@ -216,8 +200,8 @@ class TradeCopierEngine:
                     slave_login = s["slave_login"]
                     self._dispatch_cancel_pending(group_id, master_login, slave_login, old_ticket, old_order)
 
-        # 3B. New or modified master pending orders (ONLY if group is active & copy_pending_orders enabled)
-        if is_active and copy_pending_orders:
+        # 3B. New or modified master pending orders
+        if copy_pending_orders:
             for m_ticket, m_order in curr_master_pending_map.items():
                 for s in slaves:
                     if s.get("status") != "active":
@@ -246,95 +230,6 @@ class TradeCopierEngine:
                             group_id, master_login, slave_login, m_ticket, m_order,
                             grp, s, master_acc, slave_acc, symbol_mappings, max_slippage, copy_sl_tp
                         )
-
-        # 4. Continuous Full-State Reconciliation Loop (Slave -> Master Audit)
-        # Prevents stray orders and eliminates desync under any circumstance (restarts, network drops, etc.)
-        for s in slaves:
-            if s.get("status") != "active":
-                continue
-            self._reconcile_slave_orphans(
-                group_id=group_id,
-                master_login=master_login,
-                slave_login=s["slave_login"],
-                curr_master_pos_map=curr_master_pos_map,
-                curr_master_pending_map=curr_master_pending_map,
-                copy_pending_orders=copy_pending_orders
-            )
-
-    def _reconcile_slave_orphans(
-        self,
-        group_id: int,
-        master_login: int,
-        slave_login: int,
-        curr_master_pos_map: Dict[int, Any],
-        curr_master_pending_map: Dict[int, Any],
-        copy_pending_orders: bool
-    ):
-        """
-        Continuous Full-State Reconciliation Engine:
-        Audits live slave positions and pending orders against live master state.
-        Any slave trade or pending order copied from this group that no longer exists on Master
-        is immediately cancelled or closed.
-        """
-        slave_acc = get_account_by_login(slave_login)
-        if not slave_acc:
-            return
-        node_id = slave_acc.get("assigned_node_id")
-        if not node_id:
-            return
-
-        slave_positions = slave_acc.get("open_positions", [])
-        slave_orders = slave_acc.get("pending_orders", [])
-        magic_tag = 880000 + int(group_id)
-
-        # 1. Audit Slave PENDING ORDERS
-        for so in slave_orders:
-            s_ticket = int(so.get("ticket", 0))
-            s_comment = str(so.get("comment", "")).strip()
-            s_magic = int(so.get("magic", 0))
-
-            m_ticket = extract_master_ticket_from_comment(s_comment)
-            is_group_order = (m_ticket is not None) or (s_magic == magic_tag)
-
-            if not is_group_order:
-                # Check DB for active copied trade record
-                db_tr = get_active_copied_trade_by_slave_ticket(slave_login, s_ticket)
-                if db_tr and db_tr.get("group_id") == group_id:
-                    m_ticket = db_tr.get("master_ticket")
-                    is_group_order = True
-
-            if is_group_order:
-                # Is this pending order still valid on Master?
-                # Valid ONLY IF: copy_pending_orders is active AND master still has this pending order
-                is_valid_on_master = copy_pending_orders and (m_ticket in curr_master_pending_map if m_ticket else False)
-
-                if not is_valid_on_master:
-                    # Stray pending order detected! Master no longer has it.
-                    self._dispatch_cancel_pending(group_id, master_login, slave_login, m_ticket or s_ticket, so)
-
-        # 2. Audit Slave OPEN POSITIONS
-        for sp in slave_positions:
-            s_ticket = int(sp.get("ticket", 0))
-            s_comment = str(sp.get("comment", "")).strip()
-            s_magic = int(sp.get("magic", 0))
-
-            m_ticket = extract_master_ticket_from_comment(s_comment)
-            is_group_pos = (m_ticket is not None) or (s_magic == magic_tag)
-
-            if not is_group_pos:
-                db_tr = get_active_copied_trade_by_slave_ticket(slave_login, s_ticket)
-                if db_tr and db_tr.get("group_id") == group_id:
-                    m_ticket = db_tr.get("master_ticket")
-                    is_group_pos = True
-
-            if is_group_pos:
-                # Is this open position still valid on Master?
-                # Valid ONLY IF: master still has this open position
-                is_valid_on_master = (m_ticket in curr_master_pos_map) if m_ticket else False
-
-                if not is_valid_on_master:
-                    # Stray open position detected! Master has closed it.
-                    self._dispatch_close(group_id, master_login, slave_login, m_ticket or s_ticket, sp)
 
     def _find_matching_slave_ticket(
         self,
@@ -540,11 +435,11 @@ class TradeCopierEngine:
         master_login: int,
         slave_login: int,
         master_ticket: int,
-        old_m_pos: Optional[Dict[str, Any]] = None
+        old_m_pos: Dict[str, Any]
     ):
-        key = (master_ticket, slave_login, "close")
+        key = (master_ticket, slave_login)
         now_ts = time.time()
-        if key in self.action_timestamps and (now_ts - self.action_timestamps[key]) < 2.5:
+        if key in self.action_timestamps and (now_ts - self.action_timestamps[key]) < 2:
             return
 
         slave_acc = get_account_by_login(slave_login)
@@ -556,15 +451,7 @@ class TradeCopierEngine:
             return
 
         slave_positions = slave_acc.get("open_positions", [])
-        slave_orders = slave_acc.get("pending_orders", [])
-        slave_ticket = self._find_matching_slave_ticket(master_ticket, slave_login, slave_positions, slave_orders)
-        if not slave_ticket and isinstance(old_m_pos, dict):
-            slave_ticket = old_m_pos.get("slave_ticket") or old_m_pos.get("ticket")
-
-        symbol = (old_m_pos.get("symbol") if isinstance(old_m_pos, dict) else "") or ""
-        order_type = (old_m_pos.get("type") if isinstance(old_m_pos, dict) else "BUY") or "BUY"
-        volume = float((old_m_pos.get("volume") if isinstance(old_m_pos, dict) else 0.01) or 0.01)
-        master_profit = float((old_m_pos.get("profit") if isinstance(old_m_pos, dict) else 0.0) or 0.0)
+        slave_ticket = self._find_matching_slave_ticket(master_ticket, slave_login, slave_positions)
 
         cmd_payload = {
             "group_id": group_id,
@@ -572,11 +459,11 @@ class TradeCopierEngine:
             "slave_login": slave_login,
             "master_ticket": master_ticket,
             "slave_ticket": slave_ticket,
-            "symbol": symbol,
-            "order_type": order_type,
-            "volume": volume,
+            "symbol": old_m_pos.get("symbol", ""),
+            "order_type": old_m_pos.get("type", "BUY"),
+            "volume": float(old_m_pos.get("volume", 0.01)),
             "comment": f"Close C:{master_ticket}",
-            "master_profit": master_profit
+            "master_profit": float(old_m_pos.get("profit", 0.0))
         }
 
         self.action_timestamps[key] = now_ts
@@ -709,11 +596,11 @@ class TradeCopierEngine:
         master_login: int,
         slave_login: int,
         master_ticket: int,
-        old_m_order: Optional[Dict[str, Any]] = None
+        old_m_order: Dict[str, Any]
     ):
-        key = (master_ticket, slave_login, "cancel_pending")
+        key = (master_ticket, slave_login)
         now_ts = time.time()
-        if key in self.action_timestamps and (now_ts - self.action_timestamps[key]) < 2.5:
+        if key in self.action_timestamps and (now_ts - self.action_timestamps[key]) < 2:
             return
 
         slave_acc = get_account_by_login(slave_login)
@@ -729,10 +616,6 @@ class TradeCopierEngine:
         slave_ticket = self._find_matching_slave_pending_ticket(
             master_ticket, slave_login, slave_orders, slave_positions
         )
-        if not slave_ticket and isinstance(old_m_order, dict):
-            slave_ticket = old_m_order.get("slave_ticket") or old_m_order.get("ticket")
-
-        symbol = (old_m_order.get("symbol") if isinstance(old_m_order, dict) else "") or ""
 
         cmd_payload = {
             "group_id": group_id,
@@ -740,7 +623,7 @@ class TradeCopierEngine:
             "slave_login": slave_login,
             "master_ticket": master_ticket,
             "slave_ticket": slave_ticket,
-            "symbol": symbol
+            "symbol": old_m_order.get("symbol", "")
         }
 
         self.action_timestamps[key] = now_ts
@@ -873,49 +756,5 @@ class TradeCopierEngine:
             self.ticket_mappings.pop((master_ticket, slave_login), None)
             if status == "success":
                 add_log(f"Cancelled pending order on Slave {slave_login} (Master #{master_ticket}).", source="COPIER")
-
-    def cleanup_slave_trades(self, group_id: int, slave_login: int):
-        """Immediately cancels pending orders and closes positions copied under a group when a slave is removed."""
-        slave_acc = get_account_by_login(slave_login)
-        if not slave_acc:
-            return
-        node_id = slave_acc.get("assigned_node_id")
-        if not node_id:
-            return
-        magic_tag = 880000 + int(group_id)
-
-        # Cancel pending orders copied under this group
-        for so in slave_acc.get("pending_orders", []):
-            s_magic = int(so.get("magic", 0))
-            m_ticket = extract_master_ticket_from_comment(so.get("comment", ""))
-            if m_ticket is not None or s_magic == magic_tag:
-                enqueue_node_command(node_id, slave_login, "CANCEL_PENDING", {
-                    "group_id": group_id,
-                    "slave_login": slave_login,
-                    "slave_ticket": so.get("ticket"),
-                    "master_ticket": m_ticket
-                })
-
-        # Close open positions copied under this group
-        for sp in slave_acc.get("open_positions", []):
-            s_magic = int(sp.get("magic", 0))
-            m_ticket = extract_master_ticket_from_comment(sp.get("comment", ""))
-            if m_ticket is not None or s_magic == magic_tag:
-                enqueue_node_command(node_id, slave_login, "CLOSE", {
-                    "group_id": group_id,
-                    "slave_login": slave_login,
-                    "slave_ticket": sp.get("ticket"),
-                    "master_ticket": m_ticket,
-                    "symbol": sp.get("symbol", "")
-                })
-
-    def cleanup_group_trades(self, group_id: int):
-        """Closes all active slave positions and pending orders when a copy group is deleted."""
-        from .db import get_copy_group_by_id
-        grp = get_copy_group_by_id(group_id)
-        if not grp:
-            return
-        for s in grp.get("slaves", []):
-            self.cleanup_slave_trades(group_id, s["slave_login"])
 
 copier_engine = TradeCopierEngine()
