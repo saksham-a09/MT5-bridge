@@ -36,6 +36,12 @@ MAX_TERMINALS="${MAX_TERMINALS:-${MAX_TERMINALS:-25}}"
 HUB_URL="${HUB_URL_OVERRIDE:-${HUB_URL:-http://34.131.201.122:8000}}"
 NODE_API_KEY="${NODE_API_KEY:-node_token_d0a403bdcc7c}"
 MASTER_MT5_DIR="${MASTER_MT5_DIR:-/app_data/Master MT5}"
+# Ensure container receives a valid container-internal path for Master MT5
+if [[ -z "$MASTER_MT5_DIR" || "$MASTER_MT5_DIR" =~ ^~ || "$MASTER_MT5_DIR" =~ ^/home || "$MASTER_MT5_DIR" =~ ^[a-zA-Z]: || ! -d "$MASTER_MT5_DIR" ]]; then
+    CONTAINER_MASTER_MT5="/app_data/Master MT5"
+else
+    CONTAINER_MASTER_MT5="$MASTER_MT5_DIR"
+fi
 CLIENTS_DIR="/app_data/worker_node/CLIENTS_${NODE_ID}"
 CONTAINER_NAME="mt5-worker-node-${NODE_ID}"
 IMAGE_NAME="worker_node-worker"
@@ -80,7 +86,7 @@ docker run -d \
     -e "NODE_ID=${NODE_ID}" \
     -e "NODE_NAME=${NODE_NAME}" \
     -e "NODE_API_KEY=${NODE_API_KEY}" \
-    -e "MASTER_MT5_DIR=${MASTER_MT5_DIR}" \
+    -e "MASTER_MT5_DIR=${CONTAINER_MASTER_MT5}" \
     -e "CLIENTS_DIR=${CLIENTS_DIR}" \
     -e "MAX_TERMINALS=${MAX_TERMINALS}" \
     -e "POLL_INTERVAL=8" \

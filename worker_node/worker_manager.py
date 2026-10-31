@@ -123,8 +123,34 @@ class WorkerManager:
         self.api_key = api_key
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         expanded_master = os.path.expanduser(master_mt5)
-        if "~" in expanded_master and os.path.isdir("/app/master_mt5"):
-            expanded_master = "/app/master_mt5"
+
+        def has_terminal(d):
+            return os.path.isdir(d) and (
+                os.path.isfile(os.path.join(d, "terminal64.exe")) or
+                os.path.isfile(os.path.join(d, "terminal.exe"))
+            )
+
+        if not has_terminal(expanded_master):
+            parent_dir = os.path.dirname(self.script_dir)
+            fallbacks = [
+                "/app_data/Master MT5",
+                "/app_data/master_mt5",
+                "Z:\\app_data\\Master MT5",
+                "Z:\\app_data\\master_mt5",
+                "/app/master_mt5",
+                "/app/Master MT5",
+                "Z:\\app\\master_mt5",
+                "Z:\\app\\Master MT5",
+                os.path.join(parent_dir, "Master MT5"),
+                os.path.join(parent_dir, "master_mt5"),
+                os.path.join(self.script_dir, "master_mt5"),
+                os.path.join(self.script_dir, "Master MT5"),
+            ]
+            for fb in fallbacks:
+                if has_terminal(fb):
+                    expanded_master = fb
+                    break
+
         self.master_mt5 = os.path.abspath(os.path.normpath(expanded_master))
         self.clients_dir = os.path.abspath(os.path.normpath(clients_dir))
         self.template_path = os.path.abspath(os.path.join(self.script_dir, "example.ini"))
@@ -345,9 +371,14 @@ class WorkerManager:
             # Check candidate directories
             candidates = [
                 self.master_mt5,
+                "/app_data/Master MT5",
+                "/app_data/master_mt5",
+                "Z:\\app_data\\Master MT5",
+                "Z:\\app_data\\master_mt5",
+                os.path.join(os.path.dirname(self.script_dir), "Master MT5"),
+                os.path.join(os.path.dirname(self.script_dir), "master_mt5"),
                 os.path.join(self.script_dir, "master_mt5"),
                 os.path.join(self.script_dir, "Master MT5"),
-                os.path.join(os.path.dirname(self.script_dir), "Master MT5"),
                 "/app/master_mt5",
                 "/app/Master MT5",
                 "Z:\\app\\master_mt5",

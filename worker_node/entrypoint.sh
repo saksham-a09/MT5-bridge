@@ -83,7 +83,30 @@ WATCHDOG_PID=$!
 # 2.6 Link shared /app_data volume paths (unique per NODE_ID to avoid conflicts across multiple containers)
 NODE_SUFFIX="${NODE_ID:-${HOSTNAME:-default}}"
 CLIENTS_DIR="${CLIENTS_DIR:-/app_data/worker_node/CLIENTS_${NODE_SUFFIX}}"
-MASTER_MT5_DIR="${MASTER_MT5_DIR:-/app_data/Master MT5}"
+
+# Ensure MASTER_MT5_DIR resolves to a valid existing directory inside the container
+RESOLVED_MASTER=""
+if [ -n "$MASTER_MT5_DIR" ] && [ -d "$MASTER_MT5_DIR" ] && { [ -f "$MASTER_MT5_DIR/terminal64.exe" ] || [ -f "$MASTER_MT5_DIR/terminal.exe" ]; }; then
+    RESOLVED_MASTER="$MASTER_MT5_DIR"
+fi
+
+if [ -z "$RESOLVED_MASTER" ]; then
+    for cand in \
+        "/app_data/Master MT5" \
+        "/app_data/master_mt5" \
+        "/app/Master MT5" \
+        "/app/master_mt5"; do
+        if [ -d "$cand" ] && { [ -f "$cand/terminal64.exe" ] || [ -f "$cand/terminal.exe" ]; }; then
+            RESOLVED_MASTER="$cand"
+            break
+        fi
+    done
+fi
+
+if [ -z "$RESOLVED_MASTER" ]; then
+    RESOLVED_MASTER="${MASTER_MT5_DIR:-/app_data/Master MT5}"
+fi
+export MASTER_MT5_DIR="$RESOLVED_MASTER"
 
 if [ -d "/app_data" ]; then
     mkdir -p "$CLIENTS_DIR" 2>/dev/null || true
