@@ -117,10 +117,22 @@ if [ -d "/app_data" ]; then
     echo "[+] Linked master_mt5 -> $MASTER_MT5_DIR"
 fi
 
+# 2.7 Start background janitor to permanently prune trashed clone directories
+(
+    while true; do
+        sleep 15
+        if [ -d "$CLIENTS_DIR" ]; then
+            find "$CLIENTS_DIR" -maxdepth 1 -name ".trash_*" -type d -exec rm -rf {} + 2>/dev/null || true
+        fi
+    done
+) &
+JANITOR_PID=$!
+
 # Cleanup handler on container shutdown
 cleanup() {
     echo "[-] Shutting down MT5 worker..."
     kill -TERM "$WATCHDOG_PID" 2>/dev/null || true
+    kill -TERM "$JANITOR_PID" 2>/dev/null || true
     kill -TERM "$XVFB_PID" 2>/dev/null || true
     exit 0
 }

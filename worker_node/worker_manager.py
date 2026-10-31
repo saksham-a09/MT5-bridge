@@ -9,6 +9,7 @@ import argparse
 import subprocess
 import threading
 import shutil
+import stat
 import psutil
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
@@ -210,6 +211,57 @@ class WorkerManager:
                 pass
         return terminated
 
+    def safe_rmtree(self, path):
+        """Robustly deletes a directory tree, clearing read-only flags and handling Wine/Windows locked binaries."""
+        if not path or not os.path.exists(path):
+            return True
+
+        def _handle_readonly(func, subpath, exc_info):
+            try:
+                os.chmod(subpath, stat.S_IWRITE | stat.S_IREAD)
+                func(subpath)
+            except Exception:
+                pass
+
+        try:
+            # Pre-pass: make all files and subdirectories writable
+            for root, dirs, files in os.walk(path):
+                for f in files:
+                    try:
+                        os.chmod(os.path.join(root, f), stat.S_IWRITE | stat.S_IREAD)
+                    except Exception:
+                        pass
+                for d in dirs:
+                    try:
+                        os.chmod(os.path.join(root, d), stat.S_IWRITE | stat.S_IREAD)
+                    except Exception:
+                        pass
+            shutil.rmtree(path, onerror=_handle_readonly)
+        except Exception:
+            pass
+
+        # If directory was successfully deleted, return True
+        if not os.path.exists(path):
+            return True
+
+        # If files remain (e.g. terminal64.exe locked by active Wine process mapping):
+        # Rename out of the clone_* namespace into .trash_* so:
+        # (1) It won't be re-scanned repeatedly in the cleanup loop
+        # (2) The container background janitor will prune it via Linux POSIX rm -rf
+        try:
+            trash_name = f".trash_{os.path.basename(path)}_{int(time.time())}"
+            trash_path = os.path.join(os.path.dirname(path), trash_name)
+            os.rename(path, trash_path)
+            try:
+                shutil.rmtree(trash_path, onerror=_handle_readonly)
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            self.log(f"safe_rmtree rename fallback failed for {path}: {e}", level="WARNING")
+
+        return not os.path.exists(path)
+
     def delete_clone_dir(self, login):
         """Safely removes an unassigned clone directory to reclaim disk space."""
         login_str = str(login)
@@ -218,8 +270,10 @@ class WorkerManager:
             try:
                 self.kill_processes_for_login(login)
                 time.sleep(0.2)
-                shutil.rmtree(clone_dir, ignore_errors=True)
-                self.log(f"Reclaimed disk space: deleted unassigned clone directory for Login {login_str}")
+                if self.safe_rmtree(clone_dir):
+                    self.log(f"Reclaimed disk space: deleted unassigned clone directory for Login {login_str}")
+                else:
+                    self.log(f"Deferred deletion of clone directory for Login {login_str} (in use)", level="WARNING")
             except Exception as e:
                 self.log(f"Failed to delete clone directory {clone_dir}: {e}", level="WARNING")
 
@@ -246,8 +300,10 @@ class WorkerManager:
                         try:
                             self.kill_processes_for_login(login_str)
                             time.sleep(0.2)
-                            shutil.rmtree(clone_path, ignore_errors=True)
-                            removed_count += 1
+                            if self.safe_rmtree(clone_path):
+                                removed_count += 1
+                            else:
+                                self.log(f"Could not delete {name} immediately; deferred to next cycle", level="WARNING")
                         except Exception as e:
                             self.log(f"Error removing {clone_path}: {e}", level="WARNING")
             if removed_count > 0:
@@ -432,6 +488,23 @@ class WorkerManager:
         self.log(f"Spawning MT5 Worker for Login {login_str} ({creds['server']})...")
         try:
             os.makedirs(clone_dir, exist_ok=True)
+            cfg_dir = os.path.join(clone_dir, "Config")
+            os.makedirs(cfg_dir, exist_ok=True)
+            dst_servers = os.path.join(cfg_dir, "servers.dat")
+            if not os.path.isfile(dst_servers) or os.path.getsize(dst_servers) < 50000:
+                master_servers = os.path.join(self.master_mt5, "Config", "servers.dat")
+                if not os.path.isfile(master_servers) or os.path.getsize(master_servers) < 50000:
+                    for c_path in ["/app_data/Master MT5/Config/servers.dat", "Z:\\app\\master_mt5\\Config\\servers.dat"]:
+                        if os.path.isfile(c_path) and os.path.getsize(c_path) >= 50000:
+                            master_servers = c_path
+                            break
+                if os.path.isfile(master_servers) and os.path.getsize(master_servers) >= 50000:
+                    try:
+                        shutil.copy2(master_servers, dst_servers)
+                        self.log(f"Pre-provisioned servers.dat for Login {login_str}")
+                    except Exception as e:
+                        self.log(f"Warning: Failed to copy servers.dat for {login_str}: {e}", level="WARNING")
+
             log_path = os.path.join(clone_dir, f"worker_{login_str}_stdout.log")
             log_file = open(log_path, "a", encoding="utf-8")
             log_file.write(f"\n--- Spawning at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
@@ -572,18 +645,31 @@ class WorkerManager:
             telemetry_file = os.path.join(cdir, "telemetry.json") if cdir else None
 
             is_ready = False
+            conn_ok = False
+            err_msg = ""
             if ready_flag and os.path.isfile(ready_flag):
                 is_ready = True
+                conn_ok = True
             elif telemetry_file and os.path.isfile(telemetry_file):
                 try:
                     mtime = os.path.getmtime(telemetry_file)
                     if mtime >= start_time:
                         is_ready = True
+                        try:
+                            with open(telemetry_file, "r", encoding="utf-8") as tf:
+                                t_json = json.load(tf)
+                            conn_ok = bool(t_json.get("is_connected"))
+                            err_msg = t_json.get("error_message") or ""
+                        except Exception:
+                            conn_ok = True
                 except Exception:
                     pass
 
             if is_ready:
-                self.log(f"Worker for Login {login} initialized and bound to MT5 API successfully ({elapsed:.1f}s). Ready for copier.")
+                if conn_ok:
+                    self.log(f"Worker for Login {login} initialized and bound to MT5 API successfully ({elapsed:.1f}s). Ready for copier.")
+                else:
+                    self.log(f"Worker for Login {login} spawned ({elapsed:.1f}s) but disconnected from broker: {err_msg}", level="WARNING")
                 self.running_workers[login] = {
                     "process": proc,
                     "config": self.spawning_worker["config"],
@@ -756,6 +842,43 @@ class WorkerManager:
             except Exception:
                 pass
 
+    def check_telemetry_watchdog(self):
+        """Scans running workers and restarts any terminal whose telemetry is stalled for > 90 seconds."""
+        now = time.time()
+        stalled_timeout = float(os.environ.get("STALLED_TELEMETRY_TIMEOUT", "90.0"))
+
+        for login, info in list(self.running_workers.items()):
+            cdir = info.get("dir")
+            if not cdir or not os.path.isdir(cdir):
+                continue
+
+            t_file = os.path.join(cdir, "telemetry.json")
+            stalled = False
+            age = 0
+
+            if not os.path.isfile(t_file):
+                tracked_start = info.get("start_time", now)
+                if now - tracked_start > stalled_timeout:
+                    stalled = True
+                    age = now - tracked_start
+            else:
+                try:
+                    mtime = os.path.getmtime(t_file)
+                    age = now - mtime
+                    if age > stalled_timeout:
+                        stalled = True
+                except Exception:
+                    pass
+
+            if stalled:
+                self.log(f"[Watchdog] Worker for Login {login} telemetry stalled for {age:.1f}s (> {stalled_timeout}s). Forcing clean staggered restart...", level="WARNING")
+                self.kill_processes_for_login(login)
+                creds = info.get("config", {})
+                del self.running_workers[login]
+                if login not in self.spawn_queue and (not self.spawning_worker or self.spawning_worker["login"] != login):
+                    self.spawn_queue.append(login)
+                    self.spawn_queue_configs[login] = creds
+
     def run(self):
         self.log("=" * 60)
         self.log(f"Starting Worker Manager Daemon on {self.node_id} ({self.node_name})")
@@ -775,6 +898,7 @@ class WorkerManager:
         last_telemetry = 0
         last_cmd_poll = 0
         last_mem_trim = 0
+        last_watchdog = 0
 
         cmd_poll_interval = float(os.environ.get("COMMAND_POLL_INTERVAL", "0.15"))
         telemetry_interval = float(os.environ.get("TELEMETRY_INTERVAL", "2.0"))
@@ -850,6 +974,14 @@ class WorkerManager:
                 except Exception:
                     pass
                 last_mem_trim = now
+
+            # 9. Periodic watchdog check for stalled worker telemetry (every 10s)
+            if now - last_watchdog >= 10.0:
+                try:
+                    self.check_telemetry_watchdog()
+                except Exception as e:
+                    self.log(f"Watchdog error: {e}", level="WARNING")
+                last_watchdog = now
 
             time.sleep(0.05)
 

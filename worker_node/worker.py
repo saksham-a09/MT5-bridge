@@ -311,6 +311,41 @@ def patch_mt5_experts_config(clone_dir, logger=None):
                 logger.warning(f"Could not write {filename}: {e}")
 
 
+def ensure_servers_dat(clone_dir, master_terminal_path=None, logger=None):
+    """Guarantees clone Config/servers.dat exists and contains full broker network definitions (>50KB)."""
+    cfg_dir = os.path.join(clone_dir, "Config")
+    os.makedirs(cfg_dir, exist_ok=True)
+    dst_servers = os.path.join(cfg_dir, "servers.dat")
+
+    if os.path.isfile(dst_servers) and os.path.getsize(dst_servers) >= 50000:
+        return True
+
+    candidates = []
+    if master_terminal_path:
+        m_dir = os.path.dirname(master_terminal_path) if os.path.isfile(master_terminal_path) else master_terminal_path
+        candidates.append(os.path.join(m_dir, "Config", "servers.dat"))
+    candidates.extend([
+        "/app_data/Master MT5/Config/servers.dat",
+        "Z:\\app\\master_mt5\\Config\\servers.dat",
+        "Z:\\app_data\\Master MT5\\Config\\servers.dat",
+        r"C:\master_mt5\Config\servers.dat"
+    ])
+
+    for cand in candidates:
+        if os.path.isfile(cand) and os.path.getsize(cand) >= 50000:
+            try:
+                shutil.copy2(cand, dst_servers)
+                if logger:
+                    logger.info(f"Auto-synced servers.dat ({os.path.getsize(dst_servers)} bytes) from {cand}")
+                return True
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Failed to copy servers.dat from {cand}: {e}")
+    if logger:
+        logger.error("Could not find a valid master servers.dat (>50KB) to sync to clone.")
+    return False
+
+
 class MT5Worker:
     def __init__(self, login_id, password, server, terminal_path, clone_dir,
                  config_template_path, sync_interval=5, expert=None, symbol=None, timeframe=None):
@@ -690,6 +725,7 @@ class MT5Worker:
 
         # Ensure AutoTrading is configured in terminal ini files with low-RAM parameters
         patch_mt5_experts_config(self.clone_dir, self.logger)
+        ensure_servers_dat(self.clone_dir, self.terminal_path, self.logger)
 
         # 4.5 Permanently disable MT5 auto-updates & bloat downloads
         # (a) Wine APPDATA WebInstall lock
@@ -797,6 +833,12 @@ class MT5Worker:
         if not executable:
             return False
 
+        # If previous broker auth permanently rejected this account, respect 15m backoff
+        if getattr(self, "_auth_failed", False):
+            if time.time() - getattr(self, "_auth_fail_time", 0) < 900:
+                return False
+            self._auth_failed = False
+
         max_attempts = 3
         timeout_ms = 25000
 
@@ -804,6 +846,13 @@ class MT5Worker:
             if not self.is_terminal_running():
                 self.logger.warning("Terminal process is not running. Aborting API binding attempt.")
                 return False
+
+            # Explicitly clean prior IPC state before every initialize call
+            try:
+                mt5.shutdown()
+            except Exception:
+                pass
+            time.sleep(0.5)
 
             success = False
             try:
@@ -829,11 +878,19 @@ class MT5Worker:
 
             if success:
                 self.logger.info("Bound to MetaTrader5 API successfully.")
+                self._consecutive_ipc_timeouts = 0
                 acc = mt5.account_info()
                 if acc is None or acc.login != self.login_id:
                     self.logger.info(f"Logging explicitly into {self.login_id}...")
                     if not mt5.login(self.login_id, password=self.password, server=self.server, timeout=timeout_ms):
-                        self.logger.warning(f"mt5.login() error: {mt5.last_error()}")
+                        err_code, err_msg = mt5.last_error()
+                        self.logger.warning(f"mt5.login() error: ({err_code}, '{err_msg}')")
+                        if err_code == -6 or "authorization failed" in str(err_msg).lower():
+                            self.logger.error(f"Broker authorization rejected for {self.login_id}: {err_msg}. Entering 15m backoff.")
+                            self._auth_failed = True
+                            self._auth_fail_time = time.time()
+                            self.collect_telemetry(force_error=f"Authorization failed: {err_msg}")
+                            return False
                     else:
                         self.logger.info(f"Logged into MT5 account {self.login_id}.")
                 self.ensure_autotrading_enabled()
@@ -846,9 +903,23 @@ class MT5Worker:
                     pass
                 return True
             else:
-                self.logger.warning(f"MT5 init attempt {attempt}/{max_attempts} failed: {mt5.last_error()}")
+                err_code, err_msg = mt5.last_error()
+                self.logger.warning(f"MT5 init attempt {attempt}/{max_attempts} failed: ({err_code}, '{err_msg}')")
+                if err_code == -6 or "authorization failed" in str(err_msg).lower():
+                    self.logger.error(f"Broker authorization rejected for {self.login_id}: ({err_code}, '{err_msg}'). Entering 15m backoff.")
+                    self._auth_failed = True
+                    self._auth_fail_time = time.time()
+                    self.collect_telemetry(force_error=f"Authorization failed: {err_msg}")
+                    return False
                 if attempt < max_attempts:
                     time.sleep(3)
+
+        # Track consecutive IPC timeouts and auto-recover terminal
+        self._consecutive_ipc_timeouts = getattr(self, "_consecutive_ipc_timeouts", 0) + 1
+        if self._consecutive_ipc_timeouts >= 3:
+            self.logger.error("Persistent IPC timeout detected (3 consecutive cycles). Forcing hard terminal restart and auto-repair...")
+            self._consecutive_ipc_timeouts = 0
+            self.restart_terminal()
 
         return False
 
@@ -917,7 +988,7 @@ class MT5Worker:
         except Exception:
             return False
 
-    def collect_telemetry(self):
+    def collect_telemetry(self, force_error=None):
         """Extracts complete telemetry and writes to local atomic JSON."""
         data = {
             "login": self.login_id,
@@ -937,7 +1008,7 @@ class MT5Worker:
             "pending_orders": [],
             "deals_history": [],
             "daily_closed_pnl": 0.0,
-            "error_message": "",
+            "error_message": force_error or "",
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")
         }
 
@@ -1051,9 +1122,12 @@ class MT5Worker:
                     data["deals_history"] = self.cached_deals or []
                     data["daily_closed_pnl"] = getattr(self, "cached_daily_closed_pnl", 0.0)
                 else:
-                    data["error_message"] = "Terminal or Account info is null."
+                    data["error_message"] = force_error or "Terminal or Account info is null."
         except Exception as e:
-            data["error_message"] = str(e)
+            data["error_message"] = force_error or str(e)
+
+        if force_error:
+            data["error_message"] = force_error
 
         # Write atomically with retry for Windows file locks
         self.last_telemetry_data = data.copy()
@@ -1832,6 +1906,10 @@ class MT5Worker:
                                     self.logger.warning("MT5 API detached. Reconnecting...")
                                     if self.connect_mt5():
                                         connected = self.check_connection()
+                                    if not getattr(self, "_auth_failed", False):
+                                        self.logger.warning("MT5 API detached. Reconnecting...")
+                                        if self.connect_mt5():
+                                            connected = self.check_connection()
                             except Exception:
                                 pass
 
@@ -1842,8 +1920,16 @@ class MT5Worker:
                         self.collect_telemetry()
                         consecutive_failures = 0
                     else:
+                        err_msg = "MT5 terminal disconnected from broker"
+                        if getattr(self, "_auth_failed", False):
+                            err_msg = "Authorization failed (Invalid account / password)"
+                        elif not proc_running:
+                            err_msg = "MT5 terminal process is not running"
+                        self.collect_telemetry(force_error=err_msg)
+
                         consecutive_failures += 1
                         if consecutive_failures >= 15:
+                        if not getattr(self, "_auth_failed", False) and consecutive_failures >= 30:
                             self.logger.error("Persistent connection failure. Restarting terminal...")
                             self.restart_terminal()
                             consecutive_failures = 0
@@ -1882,6 +1968,8 @@ class MT5Worker:
                 pass
         self.kill_process()
         time.sleep(2)
+        ensure_servers_dat(self.clone_dir, self.terminal_path, self.logger)
+        patch_mt5_experts_config(self.clone_dir, self.logger)
         if self.launch_mt5():
             self.connect_mt5()
 
